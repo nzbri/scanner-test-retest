@@ -1,0 +1,4095 @@
+---
+title: "Scanner_move_R_analysis"
+author: "Tracy Melzer"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    number_sections: yes
+    toc: yes
+    toc_depth: 5
+    toc_float: yes
+  word_document:
+    toc: yes
+editor_options: 
+  chunk_output_type: console
+---
+
+
+#Libraries
+```{r libraries, include=FALSE, echo=FALSE}
+#rm(list = ls())
+
+# Clear workspace and load packages
+library(rstan)
+#To run models in parallel
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+library(brms)
+library(plyr)
+library(tidyverse)
+library(plotly)
+library(sjstats)
+library(gridExtra)
+library(colorRamps)
+library(RColorBrewer)
+#library(rstanarm)
+#library(irr)
+#detach("package:rstanarm",unload=TRUE)
+
+
+```
+
+
+#Load Data
+##Original Data
+```{r load packages, include=FALSE, echo=FALSE}
+
+#setwd('D:/Users/Tracy Melzer/Documents/R/Scanner_move/Rscripts')
+setwd('/home/tracym/Documents/R/Scanner_move')
+#setwd('~/Google Drive/Scanner_move/Rscripts')
+
+#Load data
+mri <- read.csv("scanner_move_R.csv")
+levels(mri$session) <- c("S1", "S2", "S3")
+
+mri <- mri%>%
+  mutate(common=c('Other')) 
+mri$common[mri$session=="S1"] <- 'Ref'
+mri$common <- factor(mri$common)
+#S2 as reference.
+mri$common <- relevel(mri$common, ref="Ref")
+
+
+#S1 as reference
+#mri$session <- relevel(mri$session, ref="S1")
+#mri$session <- relevel(mri$session, ref="S2")
+
+#Scale DTI so facilitate interpretation of model estimates (too small otherwise)
+mri <- mri %>% 
+  mutate(fa.s = fa*100, md.s = md*100000, ad.s = ad*100000, rd.s = rd*100000)
+
+
+##
+## Create DTI dataset as n=3 scans exluded due to motion >2SD relative motion.
+##
+dti <- mri %>% 
+  subset(DTI.include=='yes')
+
+```
+
+
+##Freesurfer & CBF
+```{r}
+
+#Dec2019
+#Load regional data. Cortical CBF is in scbf_cortex.csv
+cbf.cort <- read.csv('analysis_spreadsheets/scbf_cortex.csv')
+cbf.sc <- read.csv('analysis_spreadsheets/scbf_sub_cort.csv')
+
+cth <- read.csv('analysis_spreadsheets/CorticalMeasuresENIGMA_ThickAvg.csv')
+sa <- read.csv('analysis_spreadsheets/CorticalMeasuresENIGMA_SurfAvg.csv')
+vol.sc <- read.csv('analysis_spreadsheets/Subcort_vol.csv')
+
+#Rename F0, F1, F2 (follow up 0/1/2) to S1, S2, S3 (session 1/2/3)
+levels(cbf.cort$session) <- c("S1", "S2", "S3")
+levels(cbf.sc$session) <- c("S1", "S2", "S3")
+levels(cth$session) <- c("S1", "S2", "S3")
+levels(sa$session) <- c("S1", "S2", "S3")
+levels(vol.sc$session) <- c("S1", "S2", "S3")
+
+#This was renamed within the CSV
+#cth <- cth %>% 
+#  mutate(id=SubjID)
+
+#sa <- sa %>% 
+#  mutate(id=SubjID)
+
+#They are both in the same order. Now included in scbf_cortex.csv
+#cbf.cort <- cbind(cbf.cort,cbf.av$cbf.cortical)
+
+```
+
+##DTI
+```{r}
+
+FA <- read.csv('analysis_spreadsheets/FA_TBSS_ROI.csv')
+MD <- read.csv('analysis_spreadsheets/MD_TBSS_ROI.csv')
+AD <- read.csv('analysis_spreadsheets/L1_TBSS_ROI.csv')
+RD <- read.csv('analysis_spreadsheets/RD_TBSS_ROI.csv')
+  
+#I know this is bad, but I'm doing it this way...
+FA <- cbind(FA,mri$DTI.include)
+MD <- cbind(MD,mri$DTI.include)
+AD <- cbind(AD,mri$DTI.include)
+RD <- cbind(RD,mri$DTI.include)
+
+#Rename F0, F1, F2 (follow up 0/1/2) to S1, S2, S3 (session 1/2/3)
+levels(FA$session) <- c("S1", "S2", "S3")
+levels(MD$session) <- c("S1", "S2", "S3")
+levels(AD$session) <- c("S1", "S2", "S3")
+levels(RD$session) <- c("S1", "S2", "S3")
+
+
+```
+
+
+
+
+#Data: Average L&R
+##CTh
+```{r}
+
+#Average the data for CTh
+cth.av <- cth %>% 
+  mutate(cth.bankssts = (L_bankssts_thickavg+R_bankssts_thickavg)/2) %>%
+  mutate(cth.caudalanteriorcingulate = (L_caudalanteriorcingulate_thickavg + R_caudalanteriorcingulate_thickavg)/2) %>%
+  mutate(cth.caudalmiddlefrontal = (L_caudalmiddlefrontal_thickavg+R_caudalmiddlefrontal_thickavg)/2) %>%
+  mutate(cth.cuneus = (L_cuneus_thickavg+R_cuneus_thickavg)/2) %>%
+  mutate(cth.entorhinal = (L_entorhinal_thickavg+R_entorhinal_thickavg)/2) %>%
+  mutate(cth.fusiform = (L_fusiform_thickavg+R_fusiform_thickavg)/2) %>%
+  mutate(cth.inferiorparietal = (L_inferiorparietal_thickavg+R_inferiorparietal_thickavg)/2) %>%
+  mutate(cth.inferiortemporal = (L_inferiortemporal_thickavg+R_inferiortemporal_thickavg)/2) %>%
+  mutate(cth.isthmuscingulate = (L_isthmuscingulate_thickavg+R_isthmuscingulate_thickavg)/2) %>%
+  mutate(cth.lateraloccipital = (L_lateraloccipital_thickavg+R_lateraloccipital_thickavg)/2) %>%
+  mutate(cth.lateralorbitofrontal = (L_lateralorbitofrontal_thickavg+R_lateralorbitofrontal_thickavg)/2) %>%
+  mutate(cth.lingual = (L_lingual_thickavg+R_lingual_thickavg)/2) %>%
+  mutate(cth.medialorbitofrontal = (L_medialorbitofrontal_thickavg+R_medialorbitofrontal_thickavg)/2) %>%
+  mutate(cth.middletemporal = (L_middletemporal_thickavg+R_middletemporal_thickavg)/2) %>%
+  mutate(cth.parahippocampal = (L_parahippocampal_thickavg+R_parahippocampal_thickavg)/2) %>%
+  mutate(cth.paracentral = (L_paracentral_thickavg+R_paracentral_thickavg)/2) %>%
+  mutate(cth.parsopercularis = (L_parsopercularis_thickavg+R_parsopercularis_thickavg)/2) %>%
+  mutate(cth.parsorbitalis = (L_parsorbitalis_thickavg+R_parsorbitalis_thickavg)/2) %>%
+  mutate(cth.parstriangularis = (L_parstriangularis_thickavg+R_parstriangularis_thickavg)/2) %>%
+  mutate(cth.pericalcarine = (L_pericalcarine_thickavg+R_pericalcarine_thickavg)/2) %>%
+  mutate(cth.postcentral = (L_postcentral_thickavg+R_postcentral_thickavg)/2) %>%
+  mutate(cth.posteriorcingulate = (L_posteriorcingulate_thickavg+R_posteriorcingulate_thickavg)/2) %>%
+  mutate(cth.precentral = (L_precentral_thickavg+R_precentral_thickavg)/2) %>%
+  mutate(cth.precuneus = (L_precuneus_thickavg+R_precuneus_thickavg)/2) %>%
+  mutate(cth.rostralanteriorcingulate = (L_rostralanteriorcingulate_thickavg+R_rostralanteriorcingulate_thickavg)/2) %>%
+  mutate(cth.rostralmiddlefrontal = (L_rostralmiddlefrontal_thickavg+R_rostralmiddlefrontal_thickavg)/2) %>%
+  mutate(cth.superiorfrontal = (L_superiorfrontal_thickavg+R_superiorfrontal_thickavg)/2) %>%
+  mutate(cth.superiorparietal = (L_superiorparietal_thickavg+R_superiorparietal_thickavg)/2) %>%
+  mutate(cth.superiortemporal = (L_superiortemporal_thickavg+R_superiortemporal_thickavg)/2) %>%
+  mutate(cth.supramarginal = (L_supramarginal_thickavg+R_supramarginal_thickavg)/2) %>%
+  mutate(cth.frontalpole = (L_frontalpole_thickavg+R_frontalpole_thickavg)/2) %>%
+  mutate(cth.temporalpole = (L_temporalpole_thickavg+R_temporalpole_thickavg)/2) %>%
+  mutate(cth.transversetemporal = (L_transversetemporal_thickavg+R_transversetemporal_thickavg)/2) %>%
+  mutate(cth.insula = (L_insula_thickavg+R_insula_thickavg)/2) %>% 
+  mutate(cth.avg = (LThickness+RThickness)/2)
+
+
+
+```
+
+##SA
+```{r}
+
+
+#Average the data for CTh
+sa.av <- sa %>% 
+  mutate(sa.bankssts = (L_bankssts_surfavg+R_bankssts_surfavg)/2) %>%
+  mutate(sa.caudalanteriorcingulate = (L_caudalanteriorcingulate_surfavg + R_caudalanteriorcingulate_surfavg)/2) %>%
+  mutate(sa.caudalmiddlefrontal = (L_caudalmiddlefrontal_surfavg+R_caudalmiddlefrontal_surfavg)/2) %>%
+  mutate(sa.cuneus = (L_cuneus_surfavg+R_cuneus_surfavg)/2) %>%
+  mutate(sa.entorhinal = (L_entorhinal_surfavg+R_entorhinal_surfavg)/2) %>%
+  mutate(sa.fusiform = (L_fusiform_surfavg+R_fusiform_surfavg)/2) %>%
+  mutate(sa.inferiorparietal = (L_inferiorparietal_surfavg+R_inferiorparietal_surfavg)/2) %>%
+  mutate(sa.inferiortemporal = (L_inferiortemporal_surfavg+R_inferiortemporal_surfavg)/2) %>%
+  mutate(sa.isthmuscingulate = (L_isthmuscingulate_surfavg+R_isthmuscingulate_surfavg)/2) %>%
+  mutate(sa.lateraloccipital = (L_lateraloccipital_surfavg+R_lateraloccipital_surfavg)/2) %>%
+  mutate(sa.lateralorbitofrontal = (L_lateralorbitofrontal_surfavg+R_lateralorbitofrontal_surfavg)/2) %>%
+  mutate(sa.lingual = (L_lingual_surfavg+R_lingual_surfavg)/2) %>%
+  mutate(sa.medialorbitofrontal = (L_medialorbitofrontal_surfavg+R_medialorbitofrontal_surfavg)/2) %>%
+  mutate(sa.middletemporal = (L_middletemporal_surfavg+R_middletemporal_surfavg)/2) %>%
+  mutate(sa.parahippocampal = (L_parahippocampal_surfavg+R_parahippocampal_surfavg)/2) %>%
+  mutate(sa.paracentral = (L_paracentral_surfavg+R_paracentral_surfavg)/2) %>%
+  mutate(sa.parsopercularis = (L_parsopercularis_surfavg+R_parsopercularis_surfavg)/2) %>%
+  mutate(sa.parsorbitalis = (L_parsorbitalis_surfavg+R_parsorbitalis_surfavg)/2) %>%
+  mutate(sa.parstriangularis = (L_parstriangularis_surfavg+R_parstriangularis_surfavg)/2) %>%
+  mutate(sa.pericalcarine = (L_pericalcarine_surfavg+R_pericalcarine_surfavg)/2) %>%
+  mutate(sa.postcentral = (L_postcentral_surfavg+R_postcentral_surfavg)/2) %>%
+  mutate(sa.posteriorcingulate = (L_posteriorcingulate_surfavg+R_posteriorcingulate_surfavg)/2) %>%
+  mutate(sa.precentral = (L_precentral_surfavg+R_precentral_surfavg)/2) %>%
+  mutate(sa.precuneus = (L_precuneus_surfavg+R_precuneus_surfavg)/2) %>%
+  mutate(sa.rostralanteriorcingulate = (L_rostralanteriorcingulate_surfavg+R_rostralanteriorcingulate_surfavg)/2) %>%
+  mutate(sa.rostralmiddlefrontal = (L_rostralmiddlefrontal_surfavg+R_rostralmiddlefrontal_surfavg)/2) %>%
+  mutate(sa.superiorfrontal = (L_superiorfrontal_surfavg+R_superiorfrontal_surfavg)/2) %>%
+  mutate(sa.superiorparietal = (L_superiorparietal_surfavg+R_superiorparietal_surfavg)/2) %>%
+  mutate(sa.superiortemporal = (L_superiortemporal_surfavg+R_superiortemporal_surfavg)/2) %>%
+  mutate(sa.supramarginal = (L_supramarginal_surfavg+R_supramarginal_surfavg)/2) %>%
+  mutate(sa.frontalpole = (L_frontalpole_surfavg+R_frontalpole_surfavg)/2) %>%
+  mutate(sa.temporalpole = (L_temporalpole_surfavg+R_temporalpole_surfavg)/2) %>%
+  mutate(sa.transversetemporal = (L_transversetemporal_surfavg+R_transversetemporal_surfavg)/2) %>%
+  mutate(sa.insula = (L_insula_surfavg+R_insula_surfavg)/2) %>% 
+  mutate(sa.avg = (LSurfArea + RSurfArea)/2)
+
+
+```
+
+
+##SubCort
+```{r}
+
+##Now for subcortical
+vol.sc.av <- vol.sc %>%
+  mutate(LatVent = (LLatVent + RLatVent)/2) %>% 
+  mutate(thal = (Lthal + Rthal)/2) %>% 
+  mutate(caud = (Lcaud + Rcaud)/2) %>% 
+  mutate(put = (Lput + Rput)/2) %>% 
+  mutate(pal = (Lpal + Rpal)/2) %>% 
+  mutate(amyg = (Lamyg + Ramyg)/2) %>% 
+  mutate(accumb = (Laccumb + Raccumb)/2) %>% 
+  mutate(hipp = (Lhipp + Rhipp)/2)
+
+
+```
+
+
+##CBF Cortex
+```{r}
+
+
+#Average the data for CBF #Divide by 2*10 to convert to correct units for CBF as values are currently 600 instead of 60.
+cbf.cort.av <- cbf.cort %>% 
+  mutate(cbf.cortex = cortex/10) %>% 
+  mutate(cbf.bankssts = (lh.bankssts + rh.bankssts)/20) %>% 
+  mutate(cbf.caudalanteriorcingulate = (lh.caudalanteriorcingulate + rh.caudalanteriorcingulate)/20) %>%
+  mutate(cbf.caudalmiddlefrontal = (lh.caudalmiddlefrontal +rh.caudalmiddlefrontal)/20) %>%
+  mutate(cbf.cuneus = (lh.cuneus+rh.cuneus)/20) %>% 
+  mutate(cbf.entorhinal = (lh.entorhinal+rh.entorhinal)/20) %>%
+  mutate(cbf.fusiform = (lh.fusiform+rh.fusiform)/20) %>%
+  mutate(cbf.inferiorparietal = (lh.inferiorparietal+rh.inferiorparietal)/20) %>%
+  mutate(cbf.inferiortemporal = (lh.inferiortemporal+rh.inferiortemporal)/20) %>%
+  mutate(cbf.isthmuscingulate = (lh.isthmuscingulate+rh.isthmuscingulate)/20) %>%
+  mutate(cbf.lateraloccipital = (lh.lateraloccipital+rh.lateraloccipital)/20) %>%
+  mutate(cbf.lateralorbitofrontal = (lh.lateralorbitofrontal+rh.lateralorbitofrontal)/20) %>%
+  mutate(cbf.lingual = (lh.lingual+rh.lingual)/20) %>%
+  mutate(cbf.medialorbitofrontal = (lh.medialorbitofrontal+rh.medialorbitofrontal)/20) %>%
+  mutate(cbf.middletemporal = (lh.middletemporal+rh.middletemporal)/20) %>%
+  mutate(cbf.parahippocampal = (lh.parahippocampal+rh.parahippocampal)/20) %>%
+  mutate(cbf.paracentral = (lh.paracentral+rh.paracentral)/20) %>%
+  mutate(cbf.parsopercularis = (lh.parsopercularis+rh.parsopercularis)/20) %>%
+  mutate(cbf.parsorbitalis = (lh.parsorbitalis+rh.parsorbitalis)/20) %>%
+  mutate(cbf.parstriangularis = (lh.parstriangularis+rh.parstriangularis)/20) %>%
+  mutate(cbf.pericalcarine = (lh.pericalcarine+rh.pericalcarine)/20) %>%
+  mutate(cbf.postcentral = (lh.postcentral+rh.postcentral)/20) %>%
+  mutate(cbf.posteriorcingulate = (lh.posteriorcingulate+rh.posteriorcingulate)/20) %>%
+  mutate(cbf.precentral = (lh.precentral+rh.precentral)/20) %>%
+  mutate(cbf.precuneus = (lh.precuneus+rh.precuneus)/20) %>%
+  mutate(cbf.rostralanteriorcingulate = (lh.rostralanteriorcingulate+rh.rostralanteriorcingulate)/20) %>%
+  mutate(cbf.rostralmiddlefrontal = (lh.rostralmiddlefrontal+rh.rostralmiddlefrontal)/20) %>%
+  mutate(cbf.superiorfrontal = (lh.superiorfrontal+rh.superiorfrontal)/20) %>%
+  mutate(cbf.superiorparietal = (lh.superiorparietal+rh.superiorparietal)/20) %>%
+  mutate(cbf.superiortemporal = (lh.superiortemporal+rh.superiortemporal)/20) %>%
+  mutate(cbf.supramarginal = (lh.supramarginal+rh.supramarginal)/20) %>%
+  mutate(cbf.frontalpole = (lh.frontalpole+rh.frontalpole)/20) %>%
+  mutate(cbf.temporalpole = (lh.temporalpole+rh.temporalpole)/20) %>%
+  mutate(cbf.transversetemporal = (lh.transversetemporal+rh.transversetemporal)/20) %>%
+  mutate(cbf.insula = (lh.insula+rh.insula)/20)
+
+```
+
+##CBF SubCort
+```{r}
+
+
+
+cbf.sub.cort.av <- cbf.sc %>%
+  mutate(cbf.wm = (Left.Cerebral.White.Matter + Right.Cerebral.White.Matter)/20) %>% 
+  mutate(cbf.cortex2 = (Left.Cerebral.Cortex + Right.Cerebral.Cortex)/20) %>% 
+  mutate(cbf.thal = (Left.Thalamus.Proper + Right.Thalamus.Proper)/20) %>% 
+  mutate(cbf.caud = (Left.Caudate + Right.Caudate)/20) %>% 
+  mutate(cbf.put = (Left.Putamen + Right.Putamen)/20) %>% 
+  mutate(cbf.pal = (Left.Pallidum + Right.Pallidum)/20) %>% 
+  mutate(cbf.amyg = (Left.Amygdala + Right.Amygdala)/20) %>% 
+  mutate(cbf.accumb = (Left.Accumbens.area + Right.Accumbens.area)/20) %>% 
+  mutate(cbf.hipp = (Left.Hippocampus.long + Right.Hippocampus.long)/20)
+#cortex2 (calculated using mri_segstats) is very, very similar to cbf.cort.av$cortex (calculated from ASL_surface_project_calculate.m using the ribbon.mgz image)
+
+```
+
+
+## DTI
+```{r}
+
+#Average the data for DTI
+FA.av <- FA %>% 
+  mutate(antLimbIC = (RantLimbIC+LantLimbIC)/2) %>% 
+  mutate(postLimbIC = (LpostLimbIC + RpostLimbIC)/2) %>%
+  mutate(retroLenticularIC = (LretroLenticularIC +RretroLenticularIC)/2) %>%
+  mutate(antCoronaRad = (LantCoronaRad+RantCoronaRad)/2) %>%
+  mutate(supCoronaRad = (LsupCoronaRad+RsupCoronaRad)/2) %>%
+  mutate(postCoronaRad = (LpostCoronaRad+RpostCoronaRad)/2) %>%
+  mutate(postThalRad = (LpostThalRad+RpostThalRad)/2) %>%
+  mutate(SagStratum = (LSagStratum+RSagStratum)/2) %>%
+  mutate(EC = (LEC+REC)/2) %>%
+  mutate(cing = (Lcing+Rcing)/2) %>%
+  mutate(hippCing = (LhippCing+RhippCing)/2) %>%
+  mutate(supLongFasc = (LsupLongFasc+RsupLongFasc)/2) %>%
+  mutate(uncinate = (Luncinate+Runcinate)/2)
+
+#Average the data for DTI
+MD.av <- MD %>% 
+  mutate(antLimbIC = (RantLimbIC+LantLimbIC)/2) %>% 
+  mutate(postLimbIC = (LpostLimbIC + RpostLimbIC)/2) %>%
+  mutate(retroLenticularIC = (LretroLenticularIC +RretroLenticularIC)/2) %>%
+  mutate(antCoronaRad = (LantCoronaRad+RantCoronaRad)/2) %>%
+  mutate(supCoronaRad = (LsupCoronaRad+RsupCoronaRad)/2) %>%
+  mutate(postCoronaRad = (LpostCoronaRad+RpostCoronaRad)/2) %>%
+  mutate(postThalRad = (LpostThalRad+RpostThalRad)/2) %>%
+  mutate(SagStratum = (LSagStratum+RSagStratum)/2) %>%
+  mutate(EC = (LEC+REC)/2) %>%
+  mutate(cing = (Lcing+Rcing)/2) %>%
+  mutate(hippCing = (LhippCing+RhippCing)/2) %>%
+  mutate(supLongFasc = (LsupLongFasc+RsupLongFasc)/2) %>%
+  mutate(uncinate = (Luncinate+Runcinate)/2)
+
+#Average the data for DTI
+AD.av <- AD %>% 
+  mutate(antLimbIC = (RantLimbIC+LantLimbIC)/2) %>% 
+  mutate(postLimbIC = (LpostLimbIC + RpostLimbIC)/2) %>%
+  mutate(retroLenticularIC = (LretroLenticularIC +RretroLenticularIC)/2) %>%
+  mutate(antCoronaRad = (LantCoronaRad+RantCoronaRad)/2) %>%
+  mutate(supCoronaRad = (LsupCoronaRad+RsupCoronaRad)/2) %>%
+  mutate(postCoronaRad = (LpostCoronaRad+RpostCoronaRad)/2) %>%
+  mutate(postThalRad = (LpostThalRad+RpostThalRad)/2) %>%
+  mutate(SagStratum = (LSagStratum+RSagStratum)/2) %>%
+  mutate(EC = (LEC+REC)/2) %>%
+  mutate(cing = (Lcing+Rcing)/2) %>%
+  mutate(hippCing = (LhippCing+RhippCing)/2) %>%
+  mutate(supLongFasc = (LsupLongFasc+RsupLongFasc)/2) %>%
+  mutate(uncinate = (Luncinate+Runcinate)/2)
+
+#Average the data for DTI
+RD.av <- RD %>% 
+  mutate(antLimbIC = (RantLimbIC+LantLimbIC)/2) %>% 
+  mutate(postLimbIC = (LpostLimbIC + RpostLimbIC)/2) %>%
+  mutate(retroLenticularIC = (LretroLenticularIC +RretroLenticularIC)/2) %>%
+  mutate(antCoronaRad = (LantCoronaRad+RantCoronaRad)/2) %>%
+  mutate(supCoronaRad = (LsupCoronaRad+RsupCoronaRad)/2) %>%
+  mutate(postCoronaRad = (LpostCoronaRad+RpostCoronaRad)/2) %>%
+  mutate(postThalRad = (LpostThalRad+RpostThalRad)/2) %>%
+  mutate(SagStratum = (LSagStratum+RSagStratum)/2) %>%
+  mutate(EC = (LEC+REC)/2) %>%
+  mutate(cing = (Lcing+Rcing)/2) %>%
+  mutate(hippCing = (LhippCing+RhippCing)/2) %>%
+  mutate(supLongFasc = (LsupLongFasc+RsupLongFasc)/2) %>%
+  mutate(uncinate = (Luncinate+Runcinate)/2)
+
+```
+
+
+#Data Wrangle: Relative metric plots wrangle
+
+##CTh
+```{r}
+#Set up relative variables (relative to S2)
+cth.av <- cth.av %>%
+  group_by(id) %>% 
+  arrange(session) %>%
+   mutate(cth.bankssts.rel=cth.bankssts/cth.bankssts[2]) %>%
+  mutate(cth.caudalanteriorcingulate.rel=cth.caudalanteriorcingulate/cth.caudalanteriorcingulate[2]) %>%
+mutate(cth.caudalmiddlefrontal.rel = cth.caudalmiddlefrontal/cth.caudalmiddlefrontal[2]) %>%
+mutate(cth.cuneus.rel = cth.cuneus/cth.cuneus[2]) %>%
+mutate(cth.entorhinal.rel = cth.entorhinal/cth.entorhinal[2]) %>%
+mutate(cth.fusiform.rel = cth.fusiform/cth.fusiform[2]) %>%
+mutate(cth.inferiorparietal.rel = cth.inferiorparietal/cth.inferiorparietal[2]) %>%
+mutate(cth.inferiortemporal.rel = cth.inferiortemporal/cth.inferiortemporal[2]) %>%
+mutate(cth.isthmuscingulate.rel = cth.isthmuscingulate/cth.isthmuscingulate[2]) %>%
+mutate(cth.lateraloccipital.rel = cth.lateraloccipital/cth.lateraloccipital[2]) %>%
+mutate(cth.lateralorbitofrontal.rel = cth.lateralorbitofrontal/cth.lateralorbitofrontal[2]) %>%
+mutate(cth.lingual.rel = cth.lingual/cth.lingual[2]) %>%
+mutate(cth.medialorbitofrontal.rel = cth.medialorbitofrontal/cth.medialorbitofrontal[2]) %>%
+mutate(cth.middletemporal.rel = cth.middletemporal/cth.middletemporal[2]) %>%
+mutate(cth.parahippocampal.rel = cth.parahippocampal/cth.parahippocampal[2]) %>%
+mutate(cth.paracentral.rel = cth.paracentral/cth.paracentral[2]) %>%
+mutate(cth.parsopercularis.rel = cth.parsopercularis/cth.parsopercularis[2]) %>%
+mutate(cth.parsorbitalis.rel = cth.parsorbitalis/cth.parsorbitalis[2]) %>%
+mutate(cth.parstriangularis.rel = cth.parstriangularis/cth.parstriangularis[2]) %>%
+mutate(cth.pericalcarine.rel = cth.pericalcarine/cth.pericalcarine[2]) %>%
+mutate(cth.postcentral.rel = cth.postcentral/cth.postcentral[2]) %>%
+mutate(cth.posteriorcingulate.rel = cth.posteriorcingulate/cth.posteriorcingulate[2]) %>%
+mutate(cth.precentral.rel = cth.precentral/cth.precentral[2]) %>%
+mutate(cth.precuneus.rel = cth.precuneus/cth.precuneus[2]) %>%
+mutate(cth.rostralanteriorcingulate.rel = cth.rostralanteriorcingulate/cth.rostralanteriorcingulate[2]) %>%
+mutate(cth.rostralmiddlefrontal.rel = cth.rostralmiddlefrontal/cth.rostralmiddlefrontal[2]) %>%
+mutate(cth.superiorfrontal.rel = cth.superiorfrontal/cth.superiorfrontal[2]) %>%
+mutate(cth.superiorparietal.rel = cth.superiorparietal/cth.superiorparietal[2]) %>%
+mutate(cth.superiortemporal.rel = cth.superiortemporal/cth.superiortemporal[2]) %>%
+mutate(cth.supramarginal.rel = cth.supramarginal/cth.supramarginal[2]) %>%
+mutate(cth.frontalpole.rel = cth.frontalpole/cth.frontalpole[2]) %>%
+mutate(cth.temporalpole.rel = cth.temporalpole/cth.temporalpole[2]) %>%
+mutate(cth.transversetemporal.rel = cth.transversetemporal/cth.transversetemporal[2]) %>%
+mutate(cth.insula.rel = cth.insula/cth.insula[2]) %>% 
+  mutate(cth.avg.rel = cth.avg/cth.avg[2])
+
+
+
+#Create dataframe with relative values for plotting only.
+cth.roi.rel = cth.av%>%
+  gather(roi, rel.cth , c(`cth.bankssts.rel`,
+                          `cth.caudalanteriorcingulate.rel`,
+                          `cth.caudalmiddlefrontal.rel`,
+                          `cth.cuneus.rel`,
+                          `cth.entorhinal.rel`,
+                          `cth.fusiform.rel`,
+                          `cth.inferiorparietal.rel`,
+                          `cth.inferiortemporal.rel`,
+                          `cth.isthmuscingulate.rel`,
+                          `cth.lateraloccipital.rel`,
+                          `cth.lateralorbitofrontal.rel`,
+                          `cth.lingual.rel`,
+                          `cth.medialorbitofrontal.rel`,
+                          `cth.middletemporal.rel`,
+                          `cth.parahippocampal.rel`,
+                          `cth.paracentral.rel`,
+                          `cth.parsopercularis.rel`,
+                          `cth.parstriangularis.rel`,
+                          `cth.pericalcarine.rel`,
+                          `cth.postcentral.rel`,
+                          `cth.posteriorcingulate.rel`,
+                          `cth.precentral.rel`,
+                          `cth.precuneus.rel`,
+                          `cth.rostralanteriorcingulate.rel`,
+                          `cth.rostralmiddlefrontal.rel`,
+                          `cth.superiorfrontal.rel`,
+                          `cth.superiorparietal.rel`,
+                          `cth.superiortemporal.rel`,
+                          `cth.supramarginal.rel`,
+                          `cth.frontalpole.rel`,
+                          `cth.temporalpole.rel`,
+                          `cth.transversetemporal.rel`,
+                          `cth.insula.rel`)) %>% 
+  mutate(roi=factor(roi))
+
+
+```
+
+##SA
+```{r}
+
+#Set up relative variables (relative to S2)
+sa.av <- sa.av %>%
+  group_by(id) %>% 
+  arrange(session) %>%
+   mutate(sa.bankssts.rel=sa.bankssts/sa.bankssts[2]) %>%
+  mutate(sa.caudalanteriorcingulate.rel=sa.caudalanteriorcingulate/sa.caudalanteriorcingulate[2]) %>%
+mutate(sa.caudalmiddlefrontal.rel = sa.caudalmiddlefrontal/sa.caudalmiddlefrontal[2]) %>%
+mutate(sa.cuneus.rel = sa.cuneus/sa.cuneus[2]) %>%
+mutate(sa.entorhinal.rel = sa.entorhinal/sa.entorhinal[2]) %>%
+mutate(sa.fusiform.rel = sa.fusiform/sa.fusiform[2]) %>%
+mutate(sa.inferiorparietal.rel = sa.inferiorparietal/sa.inferiorparietal[2]) %>%
+mutate(sa.inferiortemporal.rel = sa.inferiortemporal/sa.inferiortemporal[2]) %>%
+mutate(sa.isthmuscingulate.rel = sa.isthmuscingulate/sa.isthmuscingulate[2]) %>%
+mutate(sa.lateraloccipital.rel = sa.lateraloccipital/sa.lateraloccipital[2]) %>%
+mutate(sa.lateralorbitofrontal.rel = sa.lateralorbitofrontal/sa.lateralorbitofrontal[2]) %>%
+mutate(sa.lingual.rel = sa.lingual/sa.lingual[2]) %>%
+mutate(sa.medialorbitofrontal.rel = sa.medialorbitofrontal/sa.medialorbitofrontal[2]) %>%
+mutate(sa.middletemporal.rel = sa.middletemporal/sa.middletemporal[2]) %>%
+mutate(sa.parahippocampal.rel = sa.parahippocampal/sa.parahippocampal[2]) %>%
+mutate(sa.paracentral.rel = sa.paracentral/sa.paracentral[2]) %>%
+mutate(sa.parsopercularis.rel = sa.parsopercularis/sa.parsopercularis[2]) %>%
+mutate(sa.parsorbitalis.rel = sa.parsorbitalis/sa.parsorbitalis[2]) %>%
+mutate(sa.parstriangularis.rel = sa.parstriangularis/sa.parstriangularis[2]) %>%
+mutate(sa.pericalcarine.rel = sa.pericalcarine/sa.pericalcarine[2]) %>%
+mutate(sa.postcentral.rel = sa.postcentral/sa.postcentral[2]) %>%
+mutate(sa.posteriorcingulate.rel = sa.posteriorcingulate/sa.posteriorcingulate[2]) %>%
+mutate(sa.precentral.rel = sa.precentral/sa.precentral[2]) %>%
+mutate(sa.precuneus.rel = sa.precuneus/sa.precuneus[2]) %>%
+mutate(sa.rostralanteriorcingulate.rel = sa.rostralanteriorcingulate/sa.rostralanteriorcingulate[2]) %>%
+mutate(sa.rostralmiddlefrontal.rel = sa.rostralmiddlefrontal/sa.rostralmiddlefrontal[2]) %>%
+mutate(sa.superiorfrontal.rel = sa.superiorfrontal/sa.superiorfrontal[2]) %>%
+mutate(sa.superiorparietal.rel = sa.superiorparietal/sa.superiorparietal[2]) %>%
+mutate(sa.superiortemporal.rel = sa.superiortemporal/sa.superiortemporal[2]) %>%
+mutate(sa.supramarginal.rel = sa.supramarginal/sa.supramarginal[2]) %>%
+  mutate(sa.frontalpole.rel = sa.frontalpole/sa.frontalpole[2]) %>%
+  mutate(sa.temporalpole.rel = sa.temporalpole/sa.temporalpole[2]) %>%
+mutate(sa.transversetemporal.rel = sa.transversetemporal/sa.transversetemporal[2]) %>%
+mutate(sa.insula.rel = sa.insula/sa.insula[2]) %>% 
+  mutate(sa.avg.rel = sa.avg/sa.avg[2])
+
+
+
+#Create dataframe with relative values for plotting only.
+sa.roi.rel = sa.av%>%
+  gather(roi, rel.sa , c(`sa.bankssts.rel`,
+                          `sa.caudalanteriorcingulate.rel`,
+                          `sa.caudalmiddlefrontal.rel`,
+                          `sa.cuneus.rel`,
+                          `sa.entorhinal.rel`,
+                          `sa.fusiform.rel`,
+                          `sa.inferiorparietal.rel`,
+                          `sa.inferiortemporal.rel`,
+                          `sa.isthmuscingulate.rel`,
+                          `sa.lateraloccipital.rel`,
+                          `sa.lateralorbitofrontal.rel`,
+                          `sa.lingual.rel`,
+                          `sa.medialorbitofrontal.rel`,
+                          `sa.middletemporal.rel`,
+                          `sa.parahippocampal.rel`,
+                          `sa.paracentral.rel`,
+                          `sa.parsopercularis.rel`,
+                          `sa.parstriangularis.rel`,
+                          `sa.pericalcarine.rel`,
+                          `sa.postcentral.rel`,
+                          `sa.posteriorcingulate.rel`,
+                          `sa.precentral.rel`,
+                          `sa.precuneus.rel`,
+                          `sa.rostralanteriorcingulate.rel`,
+                          `sa.rostralmiddlefrontal.rel`,
+                          `sa.superiorfrontal.rel`,
+                          `sa.superiorparietal.rel`,
+                          `sa.superiortemporal.rel`,
+                          `sa.supramarginal.rel`,
+                          `sa.frontalpole.rel`,
+                          `sa.temporalpole.rel`,
+                          `sa.transversetemporal.rel`,
+                          `sa.insula.rel`)) %>% 
+  mutate(roi=factor(roi))
+
+
+```
+
+
+
+##SubCort
+```{r}
+
+#Set up relative variables (relative to S2)
+vol.av <- vol.sc.av %>%
+  group_by(id) %>% 
+  arrange(session) %>%
+  mutate(LatVent.rel = LatVent/LatVent[2]) %>% 
+  mutate(thal.rel = thal/thal[2]) %>% 
+  mutate(caud.rel = caud/caud[2]) %>% 
+  mutate(put.rel = put/put[2]) %>% 
+  mutate(pal.rel = pal/pal[2]) %>% 
+  mutate(amyg.rel = amyg/amyg[2]) %>% 
+  mutate(accumb.rel = accumb/accumb[2]) %>% 
+  mutate(hipp.rel = hipp/hipp[2]) %>%
+  mutate(CortexVol.rel = CortexVol/CortexVol[2]) %>% 
+  mutate(SubCortGMVol.rel = SubCortGMVol/SubCortGMVol[2]) %>% 
+  mutate(TotGMVol.rel = TotGMVol/TotGMVol[2]) %>% 
+  mutate(WMVol.rel = WMVol/WMVol[2]) %>%
+  mutate(VentVol.rel = VentVol/VentVol[2])
+
+
+
+#Create dataframe with relative values for plotting only.
+vol.roi.rel = vol.av%>%
+  gather(roi, rel.vol , c(`LatVent.rel`,
+                          `thal.rel`,
+                          `caud.rel`,
+                          `put.rel`,
+                          `pal.rel`,
+                          `amyg.rel`,
+                          `accumb.rel`,
+                          `hipp.rel`,
+                          `CortexVol.rel`,
+                          `SubCortGMVol.rel`,
+                          `TotGMVol.rel`,
+                          `WMVol.rel`,
+                          `VentVol.rel`)) %>% 
+  mutate(roi=factor(roi))
+
+```
+
+
+##CBF Cortex
+```{r}
+#Set up relative variables (relative to S2)
+cbf.cort.av <- cbf.cort.av %>%
+  group_by(id) %>% 
+  arrange(session) %>%
+  mutate(cbf.caudalanteriorcingulate.rel=cbf.caudalanteriorcingulate/cbf.caudalanteriorcingulate[2]) %>%
+mutate(cbf.caudalmiddlefrontal.rel = cbf.caudalmiddlefrontal/cbf.caudalmiddlefrontal[2]) %>%
+mutate(cbf.cuneus.rel = cbf.cuneus/cbf.cuneus[2]) %>%
+mutate(cbf.entorhinal.rel = cbf.entorhinal/cbf.entorhinal[2]) %>%
+mutate(cbf.fusiform.rel = cbf.fusiform/cbf.fusiform[2]) %>%
+mutate(cbf.inferiorparietal.rel = cbf.inferiorparietal/cbf.inferiorparietal[2]) %>%
+mutate(cbf.inferiortemporal.rel = cbf.inferiortemporal/cbf.inferiortemporal[2]) %>%
+mutate(cbf.isthmuscingulate.rel = cbf.isthmuscingulate/cbf.isthmuscingulate[2]) %>%
+mutate(cbf.lateraloccipital.rel = cbf.lateraloccipital/cbf.lateraloccipital[2]) %>%
+mutate(cbf.lateralorbitofrontal.rel = cbf.lateralorbitofrontal/cbf.lateralorbitofrontal[2]) %>%
+mutate(cbf.lingual.rel = cbf.lingual/cbf.lingual[2]) %>%
+mutate(cbf.medialorbitofrontal.rel = cbf.medialorbitofrontal/cbf.medialorbitofrontal[2]) %>%
+mutate(cbf.middletemporal.rel = cbf.middletemporal/cbf.middletemporal[2]) %>%
+mutate(cbf.parahippocampal.rel = cbf.parahippocampal/cbf.parahippocampal[2]) %>%
+mutate(cbf.paracentral.rel = cbf.paracentral/cbf.paracentral[2]) %>%
+mutate(cbf.parsopercularis.rel = cbf.parsopercularis/cbf.parsopercularis[2]) %>%
+mutate(cbf.parsorbitalis.rel = cbf.parsorbitalis/cbf.parsorbitalis[2]) %>%
+mutate(cbf.parstriangularis.rel = cbf.parstriangularis/cbf.parstriangularis[2]) %>%
+mutate(cbf.pericalcarine.rel = cbf.pericalcarine/cbf.pericalcarine[2]) %>%
+mutate(cbf.postcentral.rel = cbf.postcentral/cbf.postcentral[2]) %>%
+mutate(cbf.posteriorcingulate.rel = cbf.posteriorcingulate/cbf.posteriorcingulate[2]) %>%
+mutate(cbf.precentral.rel = cbf.precentral/cbf.precentral[2]) %>%
+mutate(cbf.precuneus.rel = cbf.precuneus/cbf.precuneus[2]) %>%
+mutate(cbf.rostralanteriorcingulate.rel = cbf.rostralanteriorcingulate/cbf.rostralanteriorcingulate[2]) %>%
+mutate(cbf.rostralmiddlefrontal.rel = cbf.rostralmiddlefrontal/cbf.rostralmiddlefrontal[2]) %>%
+mutate(cbf.superiorfrontal.rel = cbf.superiorfrontal/cbf.superiorfrontal[2]) %>%
+mutate(cbf.superiorparietal.rel = cbf.superiorparietal/cbf.superiorparietal[2]) %>%
+mutate(cbf.superiortemporal.rel = cbf.superiortemporal/cbf.superiortemporal[2]) %>%
+mutate(cbf.supramarginal.rel = cbf.supramarginal/cbf.supramarginal[2]) %>%
+mutate(cbf.transversetemporal.rel = cbf.transversetemporal/cbf.transversetemporal[2]) %>%
+mutate(cbf.insula.rel = cbf.insula/cbf.insula[2]) %>% 
+  mutate(cbf.bankssts.rel = cbf.bankssts/cbf.bankssts[2]) %>%
+  mutate(cbf.frontalpole.rel = cbf.frontalpole/cbf.frontalpole[2]) %>%
+  mutate(cbf.temporalpole.rel = cbf.temporalpole/cbf.temporalpole[2])
+  
+
+
+#CBF Create dataframe with relative values for plotting only.
+cbf.cort.roi.rel = cbf.cort.av%>%
+  gather(roi, rel.cbf , c(`cbf.caudalanteriorcingulate.rel`,
+                          `cbf.caudalmiddlefrontal.rel`,
+                          `cbf.cuneus.rel`,
+                          `cbf.entorhinal.rel`,
+                          `cbf.fusiform.rel`,
+                          `cbf.inferiorparietal.rel`,
+                          `cbf.inferiortemporal.rel`,
+                          `cbf.isthmuscingulate.rel`,
+                          `cbf.lateraloccipital.rel`,
+                          `cbf.lateralorbitofrontal.rel`,
+                          `cbf.lingual.rel`,
+                          `cbf.medialorbitofrontal.rel`,
+                          `cbf.middletemporal.rel`,
+                          `cbf.parahippocampal.rel`,
+                          `cbf.paracentral.rel`,
+                          `cbf.parsopercularis.rel`,
+                          `cbf.parstriangularis.rel`,
+                          `cbf.pericalcarine.rel`,
+                          `cbf.postcentral.rel`,
+                          `cbf.posteriorcingulate.rel`,
+                          `cbf.precentral.rel`,
+                          `cbf.precuneus.rel`,
+                          `cbf.rostralanteriorcingulate.rel`,
+                          `cbf.rostralmiddlefrontal.rel`,
+                          `cbf.superiorfrontal.rel`,
+                          `cbf.superiorparietal.rel`,
+                          `cbf.superiortemporal.rel`,
+                          `cbf.supramarginal.rel`,
+                          `cbf.transversetemporal.rel`,
+                          `cbf.insula.rel`,
+                          `cbf.bankssts.rel`,
+                          `cbf.frontalpole.rel`,
+                          `cbf.temporalpole.rel`)) %>% 
+  mutate(roi=factor(roi))
+
+```
+
+
+##CBF SubCort
+```{r}
+#Set up relative variables (relative to S2)
+cbf.sub.cort.av <- cbf.sub.cort.av %>%
+  group_by(id) %>% 
+  arrange(session) %>%
+  mutate(cbf.wm.rel = cbf.wm/cbf.wm[2]) %>% 
+  mutate(cbf.cortex.rel = cbf.cortex2/cbf.cortex2[2]) %>%
+  mutate(cbf.thal.rel = cbf.thal/cbf.thal[2]) %>%
+  mutate(cbf.caud.rel = cbf.caud/cbf.caud[2]) %>%
+  mutate(cbf.put.rel = cbf.put/cbf.put[2]) %>%
+  mutate(cbf.pal.rel = cbf.pal/cbf.pal[2]) %>%
+  mutate(cbf.amyg.rel = cbf.amyg/cbf.amyg[2]) %>%
+  mutate(cbf.accumb.rel = cbf.accumb/cbf.accumb[2]) %>%
+  mutate(cbf.hipp.rel = cbf.hipp/cbf.hipp[2]) %>% 
+  mutate(cbf.cortex.rel = cbf.cortex2/cbf.cortex2[2])
+  
+  
+#CBF Create dataframe with relative values for plotting only.
+cbf.sub.cort.roi.rel = cbf.sub.cort.av%>%
+  gather(roi, rel.cbf , c(`cbf.thal.rel`,
+                          `cbf.caud.rel`,
+                          `cbf.put.rel`,
+                          `cbf.pal.rel`,
+                          `cbf.amyg.rel`,
+                          `cbf.accumb.rel`,
+                          `cbf.hipp.rel`)) %>% 
+  mutate(roi=factor(roi))
+
+```
+
+
+##DTI
+```{r}
+
+#Set up relative variables (relative to S2)
+FA.av <- FA.av %>%
+  group_by(id) %>% 
+  arrange(session) %>%
+  mutate(genu.rel=genu/genu[2]) %>%
+  mutate(bodyCC.rel=bodyCC/bodyCC[2]) %>%
+  mutate(splenium.rel=splenium/splenium[2]) %>%
+  mutate(fornix.rel=fornix/fornix[2]) %>%
+  mutate(antLimbIC.rel=antLimbIC/antLimbIC[2]) %>%
+  mutate(postLimbIC.rel=postLimbIC/postLimbIC[2]) %>%
+  mutate(retroLenticularIC.rel=retroLenticularIC/retroLenticularIC[2]) %>%
+  mutate(antCoronaRad.rel=antCoronaRad/antCoronaRad[2]) %>%
+  mutate(supCoronaRad.rel=supCoronaRad/supCoronaRad[2]) %>%
+  mutate(postCoronaRad.rel=postCoronaRad/postCoronaRad[2]) %>%
+  mutate(postThalRad.rel=postThalRad/postThalRad[2]) %>%
+  mutate(SagStratum.rel=SagStratum/SagStratum[2]) %>% 
+  mutate(EC.rel=EC/EC[2]) %>%
+  mutate(cing.rel=cing/cing[2]) %>%
+  mutate(hippCing.rel=hippCing/hippCing[2]) %>%
+  mutate(supLongFasc.rel=supLongFasc/supLongFasc[2]) %>%
+  mutate(uncinate.rel=uncinate/uncinate[2])
+
+#Now exclude to get normalization to work for PH_108 (this person only has S1 & S3)
+FA.av <- FA.av %>% 
+    subset(mri$DTI.include=='yes')
+
+
+
+#Create dataframe with relative values for plotting only.
+fa.roi.rel = FA.av%>%
+  gather(roi, fa , c(`genu.rel`,
+                          `bodyCC.rel`,
+                          `splenium.rel`,
+                          `fornix.rel`,
+                          `antLimbIC.rel`,
+                          `postLimbIC.rel`,
+                          `retroLenticularIC.rel`,
+                          `antCoronaRad.rel`,
+                          `supCoronaRad.rel`,
+                          `postCoronaRad.rel`,
+                          `postThalRad.rel`,
+                          `SagStratum.rel`,
+                          `EC.rel`,
+                          `cing.rel`,
+                          `hippCing.rel`,
+                          `supLongFasc.rel`,
+                          `uncinate.rel`)) %>% 
+  mutate(roi=factor(roi))
+
+
+#Set up relative variables (relative to S2)
+MD.av <- MD.av %>%
+  group_by(id) %>% 
+  arrange(session) %>%
+  mutate(genu.rel=genu/genu[2]) %>%
+  mutate(bodyCC.rel=bodyCC/bodyCC[2]) %>%
+  mutate(splenium.rel=splenium/splenium[2]) %>%
+  mutate(fornix.rel=fornix/fornix[2]) %>%
+  mutate(antLimbIC.rel=antLimbIC/antLimbIC[2]) %>%
+  mutate(postLimbIC.rel=postLimbIC/postLimbIC[2]) %>%
+  mutate(retroLenticularIC.rel=retroLenticularIC/retroLenticularIC[2]) %>%
+  mutate(antCoronaRad.rel=antCoronaRad/antCoronaRad[2]) %>%
+  mutate(supCoronaRad.rel=supCoronaRad/supCoronaRad[2]) %>%
+  mutate(postCoronaRad.rel=postCoronaRad/postCoronaRad[2]) %>%
+  mutate(postThalRad.rel=postThalRad/postThalRad[2]) %>%
+  mutate(SagStratum.rel=SagStratum/SagStratum[2]) %>% 
+  mutate(EC.rel=EC/EC[2]) %>%
+  mutate(cing.rel=cing/cing[2]) %>%
+  mutate(hippCing.rel=hippCing/hippCing[2]) %>%
+  mutate(supLongFasc.rel=supLongFasc/supLongFasc[2]) %>%
+  mutate(uncinate.rel=uncinate/uncinate[2])
+
+
+#Now exclude to get normalization to work for PH_108 (this person only has S2 & S3)
+MD.av <- MD.av %>% 
+    subset(mri$DTI.include=='yes')
+
+
+#Create dataframe with relative values for plotting only.
+md.roi.rel = MD.av%>%
+  gather(roi, md , c(`genu.rel`,
+                          `bodyCC.rel`,
+                          `splenium.rel`,
+                          `fornix.rel`,
+                          `antLimbIC.rel`,
+                          `postLimbIC.rel`,
+                          `retroLenticularIC.rel`,
+                          `antCoronaRad.rel`,
+                          `supCoronaRad.rel`,
+                          `postCoronaRad.rel`,
+                          `postThalRad.rel`,
+                          `SagStratum.rel`,
+                          `EC.rel`,
+                          `cing.rel`,
+                          `hippCing.rel`,
+                          `supLongFasc.rel`,
+                          `uncinate.rel`)) %>% 
+  mutate(roi=factor(roi))
+
+#Set up relative variables (relative to S2)
+AD.av <- AD.av %>%
+  group_by(id) %>% 
+  arrange(session) %>%
+  mutate(genu.rel=genu/genu[2]) %>%
+  mutate(bodyCC.rel=bodyCC/bodyCC[2]) %>%
+  mutate(splenium.rel=splenium/splenium[2]) %>%
+  mutate(fornix.rel=fornix/fornix[2]) %>%
+  mutate(antLimbIC.rel=antLimbIC/antLimbIC[2]) %>%
+  mutate(postLimbIC.rel=postLimbIC/postLimbIC[2]) %>%
+  mutate(retroLenticularIC.rel=retroLenticularIC/retroLenticularIC[2]) %>%
+  mutate(antCoronaRad.rel=antCoronaRad/antCoronaRad[2]) %>%
+  mutate(supCoronaRad.rel=supCoronaRad/supCoronaRad[2]) %>%
+  mutate(postCoronaRad.rel=postCoronaRad/postCoronaRad[2]) %>%
+  mutate(postThalRad.rel=postThalRad/postThalRad[2]) %>%
+  mutate(SagStratum.rel=SagStratum/SagStratum[2]) %>% 
+  mutate(EC.rel=EC/EC[2]) %>%
+  mutate(cing.rel=cing/cing[2]) %>%
+  mutate(hippCing.rel=hippCing/hippCing[2]) %>%
+  mutate(supLongFasc.rel=supLongFasc/supLongFasc[2]) %>%
+  mutate(uncinate.rel=uncinate/uncinate[2])
+
+#Now exclude to get normalization to work for PH_108 (this person only has S2 & S3)
+AD.av <- AD.av %>% 
+    subset(mri$DTI.include=='yes')
+
+
+#Create dataframe with relative values for plotting only.
+ad.roi.rel = AD.av%>%
+  gather(roi, ad , c(`genu.rel`,
+                          `bodyCC.rel`,
+                          `splenium.rel`,
+                          `fornix.rel`,
+                          `antLimbIC.rel`,
+                          `postLimbIC.rel`,
+                          `retroLenticularIC.rel`,
+                          `antCoronaRad.rel`,
+                          `supCoronaRad.rel`,
+                          `postCoronaRad.rel`,
+                          `postThalRad.rel`,
+                          `SagStratum.rel`,
+                          `EC.rel`,
+                          `cing.rel`,
+                          `hippCing.rel`,
+                          `supLongFasc.rel`,
+                          `uncinate.rel`)) %>% 
+  mutate(roi=factor(roi))
+
+#Set up relative variables (relative to S2)
+RD.av <- RD.av %>%
+  group_by(id) %>% 
+  arrange(session) %>%
+  mutate(genu.rel=genu/genu[2]) %>%
+  mutate(bodyCC.rel=bodyCC/bodyCC[2]) %>%
+  mutate(splenium.rel=splenium/splenium[2]) %>%
+  mutate(fornix.rel=fornix/fornix[2]) %>%
+  mutate(antLimbIC.rel=antLimbIC/antLimbIC[2]) %>%
+  mutate(postLimbIC.rel=postLimbIC/postLimbIC[2]) %>%
+  mutate(retroLenticularIC.rel=retroLenticularIC/retroLenticularIC[2]) %>%
+  mutate(antCoronaRad.rel=antCoronaRad/antCoronaRad[2]) %>%
+  mutate(supCoronaRad.rel=supCoronaRad/supCoronaRad[2]) %>%
+  mutate(postCoronaRad.rel=postCoronaRad/postCoronaRad[2]) %>%
+  mutate(postThalRad.rel=postThalRad/postThalRad[2]) %>%
+  mutate(SagStratum.rel=SagStratum/SagStratum[2]) %>% 
+  mutate(EC.rel=EC/EC[2]) %>%
+  mutate(cing.rel=cing/cing[2]) %>%
+  mutate(hippCing.rel=hippCing/hippCing[2]) %>%
+  mutate(supLongFasc.rel=supLongFasc/supLongFasc[2]) %>%
+  mutate(uncinate.rel=uncinate/uncinate[2])
+
+#Now exclude to get normalization to work for PH_108 (this person only has S2 & S3)
+RD.av <- RD.av %>% 
+    subset(mri$DTI.include=='yes')
+
+
+#Create dataframe with relative values for plotting only.
+rd.roi.rel = RD.av%>%
+  gather(roi, rd , c(`genu.rel`,
+                          `bodyCC.rel`,
+                          `splenium.rel`,
+                          `fornix.rel`,
+                          `antLimbIC.rel`,
+                          `postLimbIC.rel`,
+                          `retroLenticularIC.rel`,
+                          `antCoronaRad.rel`,
+                          `supCoronaRad.rel`,
+                          `postCoronaRad.rel`,
+                          `postThalRad.rel`,
+                          `SagStratum.rel`,
+                          `EC.rel`,
+                          `cing.rel`,
+                          `hippCing.rel`,
+                          `supLongFasc.rel`,
+                          `uncinate.rel`)) %>% 
+  mutate(roi=factor(roi))
+
+
+```
+
+
+##DTI Skel
+```{r}
+
+mri.av <- mri %>% 
+  group_by(id) %>% 
+  arrange(session) %>% 
+  mutate(fa.rel = fa/fa[2]) %>% 
+  mutate(md.rel = md/md[2]) %>% 
+  mutate(ad.rel = ad/ad[2]) %>% 
+  mutate(rd.rel = rd/rd[2])
+
+```
+
+
+
+
+#Data Wrangle
+##Merge T1,CBF,DTI
+```{r}
+
+#Merge CTh & SA
+fs <- cth.av %>% 
+  right_join(sa.av,by=c("id","session")) %>% 
+  right_join(vol.av, by=c("id","session")) %>% 
+  right_join(cbf.cort.av, by=c("id", "session")) %>% 
+  right_join(cbf.sub.cort.av,by=c("id","session")) %>% 
+  left_join(mri.av,by=c("id","session")) %>% 
+  left_join(FA.av,by=c("id","session")) 
+ 
+  # left_join(MD.av,by=c("id","session")) %>% 
+  # left_join(AD.av,by=c("id","session")) %>% 
+  # left_join(RD.av,by=c("id","session"))
+
+```
+
+
+#Data Wrangle
+##Global plot
+```{r}
+
+#Create a dataframe to create a global plot with: 
+# Cortical Volume
+# Subcortical GM volume
+# Total GM volume
+# White matter volume
+# Ventricular volume
+# mean cortical thickness
+# total surface area
+# Cortical CBF 
+# Skeletal FA, MD, AD, RD
+
+
+global.mri.plot <- fs %>% 
+  select(id, session, sa.avg.rel, cth.avg.rel, TotGMVol.rel, WMVol.rel, VentVol.rel,
+         CortexVol.rel, SubCortGMVol.rel,cbf.cortex.rel,fa.rel,md.rel,ad.rel,rd.rel) %>% 
+  gather(roi, metric, c( `CortexVol.rel`,
+                          `SubCortGMVol.rel`,
+                          `TotGMVol.rel`,
+                          `WMVol.rel`,
+                          `VentVol.rel`,
+                         `sa.avg.rel`,
+                         `cth.avg.rel`,
+                         `cbf.cortex.rel`,
+                         `fa.rel`,
+                         `md.rel`,
+                         `ad.rel`,
+                         `rd.rel`)) %>% 
+    mutate(roi=factor(roi))
+
+
+```
+
+
+
+#Functions
+##wsCoefVariation
+```{r}
+##within-subject Coefficient of Variation
+##I got a bit lazy and wrote this as 2 separate function for s1-s2 and s2-s3. Not a good idea, but it works.
+
+## Inputs are a data.frame with  id, session, metricS1, metrics2, and then number of subjects.
+
+wsCV.s12 <- function(d.frame){
+  
+  #Get rid of any values that are NAs
+  d.frame <- d.frame %>% 
+    drop_na()
+
+  #Number of unique subjects
+  n <- nrow(d.frame)
+  
+  wsCV.val <- d.frame %>% 
+  ## wsCV(%) = SD(deltaMRI)/mean(CBF)*100
+  mutate(s2 = ((S2-S1)^2)/2) %>% 
+  mutate(m = (S2+S1)/2) %>% 
+  mutate(s2m2 = (s2/m^2)) %>% 
+  mutate(ms2m2 = mean(s2m2)) %>% 
+  mutate(wsCV = sqrt(ms2m2)) %>% 
+  mutate(sds2m2 = sd(s2m2)) %>% 
+  mutate(sem = sds2m2/sqrt(n)) %>% 
+  mutate(lci = sqrt(ms2m2 - 1.96*sem),uci = sqrt(ms2m2 + 1.96*sem)) %>% 
+  summarise(wsCV = 100*mean(wsCV), LCI = 100*mean(lci), UCI=100*mean(uci))
+  #Take the mean as all values are the same
+
+return(wsCV.val)
+}
+
+
+wsCV.s23 <- function(d.frame){
+  
+  #Get rid of any values that are NAs
+  d.frame <- d.frame %>% 
+    drop_na()
+
+  #Number of unique subjects
+  n <- nrow(d.frame)
+  
+  wsCV.val <- d.frame %>% 
+  ## wsCV(%) = SD(deltaMRI)/mean(CBF)*100
+  mutate(s2 = ((S2-S3)^2)/2) %>% 
+  mutate(m = (S2+S3)/2) %>% 
+  mutate(s2m2 = (s2/m^2)) %>% 
+  mutate(ms2m2 = mean(s2m2)) %>% 
+  mutate(wsCV = sqrt(ms2m2)) %>% 
+  mutate(sds2m2 = sd(s2m2)) %>% 
+  mutate(sem = sds2m2/sqrt(n)) %>% 
+  mutate(lci = sqrt(ms2m2 - 1.96*sem),uci = sqrt(ms2m2 + 1.96*sem)) %>% 
+  summarise(wsCV = 100*mean(wsCV), LCI = 100*mean(lci), UCI=100*mean(uci))
+  #Take the mean as all values are the same
+
+return(wsCV.val)
+}
+```
+
+
+##% diff table
+```{r}
+## Return percent differences of mean and variance, with CIs.
+
+
+per_diff <- function(brm.fit) {
+  sum.brm.fit <- summary(brm.fit)
+  
+  #Intercep and CI
+  int <- sum.brm.fit$fixed[1]
+  int.ci.l <- sum.brm.fit$fixed[1,3]
+  int.ci.u <- sum.brm.fit$fixed[1,4]
+  
+  #S1 mean and CI
+  s1m <- sum.brm.fit$fixed[2]/sum.brm.fit$fixed[1] * 100
+  s1m.ci.l <- sum.brm.fit$fixed[2,3]/sum.brm.fit$fixed[1] * 100
+  s1m.ci.u <-sum.brm.fit$fixed[2,4]/sum.brm.fit$fixed[1] * 100
+  
+  #S1 variance and CI
+  s1v <- sum.brm.fit$random$id[2]/sum.brm.fit$fixed[1] * 100
+  s1v.ci.l <- sum.brm.fit$random$id[2,3]/sum.brm.fit$fixed[1] * 100
+  s1v.ci.u <-sum.brm.fit$random$id[2,4]/sum.brm.fit$fixed[1] * 100
+  
+  #S3 mean and CI
+  s3m <- sum.brm.fit$fixed[3]/sum.brm.fit$fixed[1] * 100
+  s3m.ci.l <- sum.brm.fit$fixed[3,3]/sum.brm.fit$fixed[1] * 100
+  s3m.ci.u <-sum.brm.fit$fixed[3,4]/sum.brm.fit$fixed[1] * 100
+  
+  #S3 variance and CI
+  s3v <- sum.brm.fit$random$id[3]/sum.brm.fit$fixed[1] * 100
+  s3v.ci.l <- sum.brm.fit$random$id[3,3]/sum.brm.fit$fixed[1] * 100
+  s3v.ci.u <-sum.brm.fit$random$id[3,4]/sum.brm.fit$fixed[1] * 100
+  
+  
+ rnames <- c('mean','mCI.l', 'mCI.u','variance', 'vCI.l', 'vCI.u')
+  
+d <- rbind(int, int.ci.l, int.ci.u, s1m,s1m.ci.l, s1m.ci.u, s1v, s1v.ci.l,
+             s1v.ci.u, s3m,s3m.ci.l, s3m.ci.u, s3v, s3v.ci.l, s3v.ci.u)
+  
+return(d)
+}
+```
+
+
+
+##Sample Size
+```{r}
+#To calculate group size in a 2 sample t test based on variance observed.
+
+sample_size <- function(brms.fit, mag_diff, alpha, power){
+  
+  #Assume 2 tailed test
+Za <- qnorm(alpha/2,lower=FALSE)
+Zb <- qnorm(1-power,lower=FALSE)
+
+
+#Get sample size for a 2 sample t test based on variance. 
+GM.mod <- summary(brms.fit)
+m.gm <- GM.mod$fixed[1,1]
+mm.gm <- m.gm - (m.gm*mag_diff)
+sd.gm <- GM.mod$random$id[1,1]
+es.gm <- abs(m.gm - mm.gm)/sd.gm
+n <- ceiling(2 * (((Za + Zb)/es.gm)^2))
+
+
+return(n)
+}
+
+
+
+```
+
+
+
+
+
+#PLOTS
+
+##Figure: Relative by metricNEW
+```{r Relative by metric, echo=FALSE, warning=FALSE}
+
+global.mri.plot$session <- relevel(global.mri.plot$session,ref="S1")
+#levels(mri.roi.rel$session) <- c("S1", "S2", "S3")
+#Rename levels
+levels(global.mri.plot$roi) <- c("AD","CBF","Cortical Vol", "CTh", "FA", "MD", "RD", "SA",
+                              "SubCort Vol", "GM Vol", "Vent Vol", "WM Vol")
+
+#Relevel ROI
+global.mri.plot$roi <- fct_relevel(global.mri.plot$roi, "GM Vol","Cortical Vol", 
+                                   "SubCort Vol", 
+                              "WM Vol", "Vent Vol", "CTh", "SA","CBF","FA", "MD","AD", "RD")
+
+
+# av.p.global.mri <- global.mri%>%
+#   group_by(session,roi)%>%
+#   dplyr::summarize(av = mean(metric))
+# av.dataframe <- data.frame(av.p.global.mri) 
+
+
+p.global.mri<- ggplot(global.mri.plot, aes(x=session,y=metric)) +
+  geom_line(aes(group=id),alpha=0.3) +
+  geom_point(alpha=0.3) +
+  scale_x_discrete('Session') +
+  ylab("Relative MRI change") +
+  scale_y_continuous(breaks=c(0.6, 0.8, 1.0, 1.2)) +
+  facet_wrap(~roi) +
+  guides(color=guide_legend(title="")) + 
+  #geom_point(data=av.dataframe, aes(x=session, y=av,color=roi))+ 
+  #geom_line(data=av.dataframe, aes(x=session, y=av,color=roi, group=roi)) +
+  theme(legend.position = "none")
+p.global.mri
+
+
+ggsave("Global_MRI_by_metric.pdf",width=8,height=5)
+
+
+
+
+```
+
+
+##Figure: Relative Cth
+```{r Relative CTh, echo=FALSE, warning=FALSE}
+
+cth.roi.rel$session <- relevel(cth.roi.rel$session,ref="S1")
+
+
+#levels(mri.roi.rel$roi) <- c("GM", "WM", "CSF")
+#levels(mri.roi.rel$roi) <- c("GM", "WM", "CSF", "CTh", "SA", "CBF", "FA", "MD", "AD", "RD")
+
+
+av.p.rel.cth <- cth.roi.rel%>%
+  group_by(session,roi)%>%
+  dplyr::summarize(av = mean(rel.cth))
+av.dataframe.cth <- data.frame(av.p.rel.cth) 
+
+
+## With MEAN lines***********************************
+p.rel.cth<- ggplot(cth.roi.rel, aes(x=session,y=rel.cth)) +
+  geom_line(aes(group=id),alpha=0.3) +
+  geom_point(alpha=0.3) +
+  scale_x_discrete('Session') +
+  ylab("Relative CTh change") +
+  scale_y_continuous(breaks=c(0.6, 0.8, 1.0, 1.2)) +
+  facet_wrap(~roi) +
+  guides(color=guide_legend(title="")) + 
+  geom_point(data=av.dataframe.cth, aes(x=session, y=av,color=roi))+ 
+  geom_line(data=av.dataframe.cth, aes(x=session, y=av,color=roi, group=roi)) +
+  theme(legend.position = "none")
+p.rel.cth
+
+ggsave("Rel_CTh_by_roi_s2REF_WITHav.pdf",width=8,height=5)
+##***********************************************************************
+
+
+
+## WITHOUT MEAN lines*****************************************************
+
+#Sort out naming for plot
+levels(cth.roi.rel$roi) <- c("Bankssts", "CaudalAntCing", "CaudalMidFront", "Cuneus",
+                             "Entorhinal", "FrontalPole", "Fusiform", "InfParietal", 
+                             "InfTemporal", "Insula", "IsthCing", "LatOcc", "LatOrbFrontal",
+                             "Lingual", "MedOrbFrontal", "MidTemporal", "Paracentral",
+                             "ParaHipp", "ParsOperc", "ParsTriang", "PeriCalcarine",
+                             "Postcentral", "PostCing", "Precentral", "Precuneus",
+                             "RostAntCing", "RostMidFrontal", "SupFrontal", "SupParietal",
+                             "SupTemporal", "Supramarginal", "TemporalPole",
+                             "TransverseTemp")
+  
+
+
+
+p.rel.cth.NOAV<- ggplot(cth.roi.rel, aes(x=session,y=rel.cth)) +
+  geom_line(aes(group=id),alpha=0.3) +
+  geom_point(alpha=0.3) +
+  scale_x_discrete('Session') +
+  ylab("Relative CTh change") +
+  scale_y_continuous(breaks=c(0.9, 1.0, 1.1)) +
+  facet_wrap(~roi) +
+  guides(color=guide_legend(title="")) + 
+theme(legend.position = "none")
+p.rel.cth.NOAV
+
+ggsave("Rel_CTh_by_roi_s2REF_noav.pdf",width=8,height=5)
+##****************************************************************
+
+
+```
+
+
+
+##Figure: Relative SA
+```{r Relative SA, echo=FALSE, warning=FALSE}
+
+sa.roi.rel$session <- relevel(sa.roi.rel$session, ref="S1")
+
+
+#levels(mri.roi.rel$roi) <- c("GM", "WM", "CSF")
+#levels(mri.roi.rel$roi) <- c("GM", "WM", "CSF", "sa", "SA", "CBF", "FA", "MD", "AD", "RD")
+
+
+av.p.rel.sa <- sa.roi.rel%>%
+  group_by(session,roi)%>%
+  dplyr::summarize(av = mean(rel.sa))
+av.dataframe.sa <- data.frame(av.p.rel.sa) 
+
+
+## With MEAN lines***********************************
+p.rel.sa<- ggplot(sa.roi.rel, aes(x=session,y=rel.sa)) +
+  geom_line(aes(group=id),alpha=0.3) +
+  geom_point(alpha=0.3) +
+  scale_x_discrete('Session') +
+  ylab("Relative SA change") +
+  scale_y_continuous(breaks=c(0.6, 0.8, 1.0, 1.2)) +
+  facet_wrap(~roi) +
+  guides(color=guide_legend(title="")) + 
+  geom_point(data=av.dataframe.sa, aes(x=session, y=av,color=roi))+ 
+  geom_line(data=av.dataframe.sa, aes(x=session, y=av,color=roi, group=roi)) +
+  theme(legend.position = "none")
+p.rel.sa
+
+ggsave("Rel_SA_by_roi_s2REF_WITHav.pdf",width=8,height=5)
+##***********************************************************************
+
+
+
+## WITHOUT MEAN lines*****************************************************
+#Sort out naming for plot
+levels(sa.roi.rel$roi) <- c("Bankssts", "CaudalAntCing", "CaudalMidFront", "Cuneus",
+                             "Entorhinal", "FrontalPole", "Fusiform", "InfParietal", 
+                             "InfTemporal", "Insula", "IsthCing", "LatOcc", "LatOrbFrontal",
+                             "Lingual", "MedOrbFrontal", "MidTemporal", "Paracentral",
+                             "ParaHipp", "ParsOperc", "ParsTriang", "PeriCalcarine",
+                             "Postcentral", "PostCing", "Precentral", "Precuneus",
+                             "RostAntCing", "RostMidFrontal", "SupFrontal", "SupParietal",
+                             "SupTemporal", "Supramarginal", "TemporalPole",
+                             "TransverseTemp")
+
+p.rel.sa.NOAV<- ggplot(sa.roi.rel, aes(x=session,y=rel.sa)) +
+  geom_line(aes(group=id),alpha=0.3) +
+  geom_point(alpha=0.3) +
+  scale_x_discrete('Session') +
+  ylab("Relative SA change") +
+  scale_y_continuous(breaks=c(0.9, 1.0, 1.1)) +
+  facet_wrap(~roi) +
+  guides(color=guide_legend(title="")) + 
+theme(legend.position = "none")
+p.rel.sa.NOAV
+
+ggsave("Rel_SA_by_roi_s2REF_noav.pdf",width=8,height=5)
+##****************************************************************
+
+
+```
+
+
+
+
+##Figure: Relative VOL
+```{r Relative VOL, echo=FALSE, warning=FALSE}
+
+vol.roi.rel$session <- relevel(vol.roi.rel$session, ref="S1")
+
+
+av.p.rel.vol <- vol.roi.rel%>%
+  group_by(session,roi)%>%
+  dplyr::summarize(av = mean(rel.vol))
+av.dataframe.vol <- data.frame(av.p.rel.vol) 
+
+
+vol.roi.rel <- vol.roi.rel %>% 
+  select(id,session,rel.vol,roi) 
+
+levels(vol.roi.rel$roi) <- c("Accumb","Amyg","Caud", "CortexVol", "Hipp", "LatVent", "Pal",
+                             "Put", "SubCortGMVol","Thal", "TotGMVol", "VentVol", "WMVol")
+  
+vol.roi.rel <- vol.roi.rel %>% 
+    filter(roi!="CortexVol") %>% 
+  filter(roi!="LatVent") %>% 
+  filter(roi!="SubCortGMVol") %>% 
+  filter(roi!="TotGMVol") %>% 
+  filter(roi!="VentVol") %>% 
+  filter(roi!="WMVol") %>% 
+  filter(roi!="Accumb")
+  
+  
+## With MEAN lines***********************************
+# p.rel.vol<- ggplot(vol.roi.rel, aes(x=session,y=rel.vol)) +
+#   geom_line(aes(group=id),alpha=0.3) +
+#   geom_point(alpha=0.3) +
+#   scale_x_discrete('Session') +
+#   ylab("Relative volume change") +
+#   scale_y_continuous(breaks=c(0.6, 0.8, 1.0, 1.2)) +
+#   facet_wrap(~roi) +
+#   guides(color=guide_legend(title="")) + 
+#   geom_point(data=av.dataframe.vol, aes(x=session, y=av,color=roi))+ 
+#   geom_line(data=av.dataframe.vol, aes(x=session, y=av,color=roi, group=roi)) +
+#   theme(legend.position = "none")
+# p.rel.vol
+# 
+# ggsave("Rel_VOL_by_roi_s2REF_WITHav.pdf",width=8,height=5)
+##***********************************************************************
+
+
+
+## WITHOUT MEAN lines*****************************************************
+p.rel.vol.NOAV<- ggplot(vol.roi.rel, aes(x=session,y=rel.vol)) +
+  geom_line(aes(group=id),alpha=0.3) +
+  geom_point(alpha=0.3) +
+  scale_x_discrete('Session') +
+  ylab("Relative voumel change") +
+  scale_y_continuous(limits=c(0.9, 1.1)) +
+  facet_wrap(~roi) +
+  guides(color=guide_legend(title="")) + 
+theme(legend.position = "none")
+p.rel.vol.NOAV
+
+ggsave("Rel_VOL_by_roi_s2REF_noav.pdf",width=8,height=5)
+##****************************************************************
+
+
+```
+
+
+
+
+##Figure: Relative CBF-cortex
+```{r Relative CBF, echo=FALSE, warning=FALSE}
+
+cbf.cort.roi.rel$session <- relevel(cbf.cort.roi.rel$session, ref="S1")
+# cbf.cort.roi.rel$session <- relevel(cbf.cort.roi.rel$session, ref="F0")
+# levels(cbf.cort.roi.rel$session) <- c("S1", "S2", "S3")
+
+
+av.p.rel.cbf.cort <- cbf.cort.roi.rel%>%
+  group_by(session,roi)%>%
+  dplyr::summarize(av = mean(rel.cbf))
+av.dataframe.cbf.cort <- data.frame(av.p.rel.cbf.cort) 
+
+
+## With MEAN lines***********************************
+# p.rel.vol<- ggplot(vol.roi.rel, aes(x=session,y=rel.vol)) +
+#   geom_line(aes(group=id),alpha=0.3) +
+#   geom_point(alpha=0.3) +
+#   scale_x_discrete('Session') +
+#   ylab("Relative volume change") +
+#   scale_y_continuous(breaks=c(0.6, 0.8, 1.0, 1.2)) +
+#   facet_wrap(~roi) +
+#   guides(color=guide_legend(title="")) + 
+#   geom_point(data=av.dataframe.vol, aes(x=session, y=av,color=roi))+ 
+#   geom_line(data=av.dataframe.vol, aes(x=session, y=av,color=roi, group=roi)) +
+#   theme(legend.position = "none")
+# p.rel.vol
+# 
+# ggsave("Rel_VOL_by_roi_s2REF_WITHav.pdf",width=8,height=5)
+##***********************************************************************
+
+
+
+## WITHOUT MEAN lines*****************************************************
+#Sort out naming for plot
+levels(cbf.cort.roi.rel$roi) <- c("Bankssts", "CaudalAntCing", "CaudalMidFront", "Cuneus",
+                             "Entorhinal", "FrontalPole", "Fusiform", "InfParietal", 
+                             "InfTemporal", "Insula", "IsthCing", "LatOcc", "LatOrbFrontal",
+                             "Lingual", "MedOrbFrontal", "MidTemporal", "Paracentral",
+                             "ParaHipp", "ParsOperc", "ParsTriang", "PeriCalcarine",
+                             "Postcentral", "PostCing", "Precentral", "Precuneus",
+                             "RostAntCing", "RostMidFrontal", "SupFrontal", "SupParietal",
+                             "SupTemporal", "Supramarginal", "TemporalPole",
+                             "TransverseTemp")
+
+p.rel.cbf.cort.NOAV<- ggplot(cbf.cort.roi.rel, aes(x=session,y=rel.cbf)) +
+  geom_line(aes(group=id),alpha=0.3) +
+  geom_point(alpha=0.3) +
+  scale_x_discrete('Session') +
+  ylab("Relative CBF change") +
+  #scale_y_continuous(limits=c(0.8, 2.0)) +
+  facet_wrap(~roi) +
+  guides(color=guide_legend(title="")) + 
+theme(legend.position = "none")
+p.rel.cbf.cort.NOAV
+
+ggsave("Rel_CBF_cort_by_roi_s2REF_noav.pdf",width=8,height=5)
+##****************************************************************
+
+
+```
+
+
+
+
+##Figure: Relative CBF-subcort
+```{r Relative CBF, echo=FALSE, warning=FALSE}
+
+cbf.sub.cort.roi.rel$session <- relevel(cbf.sub.cort.roi.rel$session, ref="S1")
+
+
+levels(cbf.sub.cort.roi.rel$roi) <- c("Accumb","Amyg","Caud", "Hipp", "Pal", "Put", "Thal")
+
+
+av.p.rel.cbf.sub.cort <- cbf.sub.cort.roi.rel%>%
+  group_by(session,roi)%>%
+  dplyr::summarize(av = mean(rel.cbf))
+av.dataframe.sub.cbf.cort <- data.frame(av.p.rel.cbf.sub.cort) 
+
+
+## With MEAN lines***********************************
+# p.rel.vol<- ggplot(vol.roi.rel, aes(x=session,y=rel.vol)) +
+#   geom_line(aes(group=id),alpha=0.3) +
+#   geom_point(alpha=0.3) +
+#   scale_x_discrete('Session') +
+#   ylab("Relative volume change") +
+#   scale_y_continuous(breaks=c(0.6, 0.8, 1.0, 1.2)) +
+#   facet_wrap(~roi) +
+#   guides(color=guide_legend(title="")) + 
+#   geom_point(data=av.dataframe.vol, aes(x=session, y=av,color=roi))+ 
+#   geom_line(data=av.dataframe.vol, aes(x=session, y=av,color=roi, group=roi)) +
+#   theme(legend.position = "none")
+# p.rel.vol
+# 
+# ggsave("Rel_VOL_by_roi_s2REF_WITHav.pdf",width=8,height=5)
+##***********************************************************************
+
+
+
+## WITHOUT MEAN lines*****************************************************
+
+#Filter Accumb to create 2x3 plot
+cbf.sub.cort.roi.rel <- cbf.sub.cort.roi.rel %>% 
+  filter(roi!="Accumb")
+p.rel.cbf.sub.cort.NOAV<- ggplot(cbf.sub.cort.roi.rel, aes(x=session,y=rel.cbf)) +
+  geom_line(aes(group=id),alpha=0.3) +
+  geom_point(alpha=0.3) +
+  scale_x_discrete('Session') +
+  ylab("Relative CBF change") +
+  #scale_y_continuous(breaks=c(0.9, 1.0, 1.1)) +
+  facet_wrap(~roi) +
+  guides(color=guide_legend(title="")) + 
+theme(legend.position = "none")
+p.rel.cbf.sub.cort.NOAV
+
+ggsave("Rel_CBF_Subcort_by_roi_s2REF_noav.pdf",width=8,height=5)
+##****************************************************************
+
+
+```
+
+##Figures: DTI
+
+###Relative FA
+```{r Relative FA, echo=FALSE, warning=FALSE}
+
+fa.roi.rel$session <- relevel(fa.roi.rel$session, ref="S1")
+
+##For plots, get rid of id=PH_007 (only 1 timepoint) and PH_108 (no reference (S2) -- although, I could recode s3 as S2, just for the regional plotting)
+fa.roi.rel <- fa.roi.rel %>% 
+  filter(id!="PH_108") %>% 
+  filter(id!="PH_007")
+
+#Set up average dataframe, if we want to plot this. 
+av.p.rel.fa <- fa.roi.rel%>%
+  group_by(session,roi)%>%
+  dplyr::summarize(av = mean(fa))
+av.dataframe.fa<- data.frame(av.p.rel.fa) 
+
+
+## With MEAN lines***********************************
+# p.rel.vol<- ggplot(vol.roi.rel, aes(x=session,y=rel.vol)) +
+#   geom_line(aes(group=id),alpha=0.3) +
+#   geom_point(alpha=0.3) +
+#   scale_x_discrete('Session') +
+#   ylab("Relative volume change") +
+#   scale_y_continuous(breaks=c(0.6, 0.8, 1.0, 1.2)) +
+#   facet_wrap(~roi) +
+#   guides(color=guide_legend(title="")) + 
+#   geom_point(data=av.dataframe.vol, aes(x=session, y=av,color=roi))+ 
+#   geom_line(data=av.dataframe.vol, aes(x=session, y=av,color=roi, group=roi)) +
+#   theme(legend.position = "none")
+# p.rel.vol
+# 
+# ggsave("Rel_VOL_by_roi_s2REF_WITHav.pdf",width=8,height=5)
+##***********************************************************************
+
+
+
+## WITHOUT MEAN lines*****************************************************
+
+#Naming of plot
+levels(fa.roi.rel$roi) <- c("AntCoronaRad", "AntLimbIC", "BodyCC", "Cing", "EC", "Fornix",
+                            "Genu", "HippCing", "PostCoronaRad", "PostLimbIC", 
+                            "PostThalRad", "RetroLenticularIC", "SagStratum", "Splenium",
+                            "SupCoronaRad", "SupLongFasc", "Uncinate")
+
+
+p.rel.fa.NOAV<- ggplot(fa.roi.rel, aes(x=session,y=fa)) +
+  geom_line(aes(group=id),alpha=0.3) +
+  geom_point(alpha=0.3) +
+  scale_x_discrete('Session') +
+  ylab("Relative FA change") +
+   scale_y_continuous(limits=c(0.8, 1.2), breaks=c(0.8, 0.9, 1.0, 1.1, 1.2)) +
+  #scale_y_continuous(breaks=c(0.85, 1.2)) +
+  facet_wrap(~roi) +
+  guides(color=guide_legend(title="")) + 
+theme(legend.position = "none")
+p.rel.fa.NOAV
+
+
+ggsave("Rel_FA_by_roi_s2REF_noav.pdf",width=8,height=5)
+##****************************************************************
+
+
+```
+
+
+
+###Relative MD
+```{r Relative MD, echo=FALSE, warning=FALSE}
+
+md.roi.rel$session <- relevel(md.roi.rel$session, ref="S1")
+
+##For plots, get rid of id=PH_007 (only 1 timepoint) and PH_108 (no reference (S2) -- although, I could recode s3 as S2, just for the regional plotting)
+md.roi.rel <- md.roi.rel %>% 
+  filter(id!="PH_108") %>% 
+  filter(id!="PH_007")
+
+#Set up average dataframe, if we want to plot this. 
+av.p.rel.md <- md.roi.rel%>%
+  group_by(session,roi)%>%
+  dplyr::summarize(av = mean(md))
+av.dataframe.md<- data.frame(av.p.rel.md) 
+
+
+## With MEAN lines***********************************
+# p.rel.vol<- ggplot(vol.roi.rel, aes(x=session,y=rel.vol)) +
+#   geom_line(aes(group=id),alpha=0.3) +
+#   geom_point(alpha=0.3) +
+#   scale_x_discrete('Session') +
+#   ylab("Relative volume change") +
+#   scale_y_continuous(breaks=c(0.6, 0.8, 1.0, 1.2)) +
+#   facet_wrap(~roi) +
+#   guides(color=guide_legend(title="")) + 
+#   geom_point(data=av.dataframe.vol, aes(x=session, y=av,color=roi))+ 
+#   geom_line(data=av.dataframe.vol, aes(x=session, y=av,color=roi, group=roi)) +
+#   theme(legend.position = "none")
+# p.rel.vol
+# 
+# ggsave("Rel_VOL_by_roi_s2REF_WITHav.pdf",width=8,height=5)
+##***********************************************************************
+
+
+
+## WITHOUT MEAN lines*****************************************************
+#Naming of plot
+levels(md.roi.rel$roi) <- c("AntCoronaRad", "AntLimbIC", "BodyCC", "Cing", "EC", "Fornix",
+                            "Genu", "HippCing", "PostCoronaRad", "PostLimbIC", 
+                            "PostThalRad", "RetroLenticularIC", "SagStratum", "Splenium",
+                            "SupCoronaRad", "SupLongFasc", "Uncinate")
+
+p.rel.md.NOAV<- ggplot(md.roi.rel, aes(x=session,y=md)) +
+  geom_line(aes(group=id),alpha=0.3) +
+  geom_point(alpha=0.3) +
+  scale_x_discrete('Session') +
+  ylab("Relative MD change") +
+  scale_y_continuous(limits=c(0.8, 1.2), breaks=c(0.8, 0.9, 1.0, 1.1, 1.2)) +
+  facet_wrap(~roi) +
+  guides(color=guide_legend(title="")) + 
+theme(legend.position = "none")
+p.rel.md.NOAV
+
+
+ggsave("Rel_MD_by_roi_s2REF_noav.pdf",width=8,height=5)
+##****************************************************************
+
+
+```
+
+
+###Relative AD
+```{r Relative AD, echo=FALSE, warning=FALSE}
+
+ad.roi.rel$session <- relevel(ad.roi.rel$session, ref="S1")
+
+##For plots, get rid of id=PH_007 (only 1 timepoint) and PH_108 (no reference (S2) -- although, I could recode s3 as S2, just for the regional plotting)
+ad.roi.rel <- ad.roi.rel %>% 
+  filter(id!="PH_108") %>% 
+  filter(id!="PH_007")
+
+#Set up average dataframe, if we want to plot this. 
+av.p.rel.ad <- ad.roi.rel%>%
+  group_by(session,roi)%>%
+  dplyr::summarize(av = mean(ad))
+av.dataframe.ad<- data.frame(av.p.rel.ad) 
+
+
+## With MEAN lines***********************************
+# p.rel.vol<- ggplot(vol.roi.rel, aes(x=session,y=rel.vol)) +
+#   geom_line(aes(group=id),alpha=0.3) +
+#   geom_point(alpha=0.3) +
+#   scale_x_discrete('Session') +
+#   ylab("Relative volume change") +
+#   scale_y_continuous(breaks=c(0.6, 0.8, 1.0, 1.2)) +
+#   facet_wrap(~roi) +
+#   guides(color=guide_legend(title="")) + 
+#   geom_point(data=av.dataframe.vol, aes(x=session, y=av,color=roi))+ 
+#   geom_line(data=av.dataframe.vol, aes(x=session, y=av,color=roi, group=roi)) +
+#   theme(legend.position = "none")
+# p.rel.vol
+# 
+# ggsave("Rel_VOL_by_roi_s2REF_WITHav.pdf",width=8,height=5)
+##***********************************************************************
+
+
+
+## WITHOUT MEAN lines*****************************************************
+
+#Naming of plot
+levels(ad.roi.rel$roi) <- c("AntCoronaRad", "AntLimbIC", "BodyCC", "Cing", "EC", "Fornix",
+                            "Genu", "HippCing", "PostCoronaRad", "PostLimbIC", 
+                            "PostThalRad", "RetroLenticularIC", "SagStratum", "Splenium",
+                            "SupCoronaRad", "SupLongFasc", "Uncinate")
+
+
+p.rel.ad.NOAV<- ggplot(ad.roi.rel, aes(x=session,y=ad)) +
+  geom_line(aes(group=id),alpha=0.3) +
+  geom_point(alpha=0.3) +
+  scale_x_discrete('Session') +
+  ylab("Relative AD change") +
+  scale_y_continuous(limits=c(0.8, 1.2), breaks=c(0.8, 0.9, 1.0, 1.1, 1.2)) +
+  facet_wrap(~roi) +
+  guides(color=guide_legend(title="")) + 
+theme(legend.position = "none")
+p.rel.ad.NOAV
+
+
+ggsave("Rel_AD_by_roi_s2REF_noav.pdf",width=8,height=5)
+##****************************************************************
+
+
+```
+
+
+
+###Relative RD
+```{r Relative RD, echo=FALSE, warning=FALSE}
+
+rd.roi.rel$session <- relevel(rd.roi.rel$session, ref="S1")
+
+##For plots, get rid of id=PH_007 (only 1 timepoint) and PH_108 (no reference (S2) -- although, I could recode s3 as S2, just for the regional plotting)
+rd.roi.rel <- rd.roi.rel %>% 
+  filter(id!="PH_108") %>% 
+  filter(id!="PH_007")
+
+#Set up average dataframe, if we want to plot this. 
+av.p.rel.rd <- rd.roi.rel%>%
+  group_by(session,roi)%>%
+  dplyr::summarize(av = mean(rd))
+av.dataframe.rd<- data.frame(av.p.rel.rd) 
+
+
+## With MEAN lines***********************************
+# p.rel.vol<- ggplot(vol.roi.rel, aes(x=session,y=rel.vol)) +
+#   geom_line(aes(group=id),alpha=0.3) +
+#   geom_point(alpha=0.3) +
+#   scale_x_discrete('Session') +
+#   ylab("Relative volume change") +
+#   scale_y_continuous(breaks=c(0.6, 0.8, 1.0, 1.2)) +
+#   facet_wrap(~roi) +
+#   guides(color=guide_legend(title="")) + 
+#   geom_point(data=av.dataframe.vol, aes(x=session, y=av,color=roi))+ 
+#   geom_line(data=av.dataframe.vol, aes(x=session, y=av,color=roi, group=roi)) +
+#   theme(legend.position = "none")
+# p.rel.vol
+# 
+# ggsave("Rel_VOL_by_roi_s2REF_WITHav.pdf",width=8,height=5)
+##***********************************************************************
+
+
+
+## WITHOUT MEAN lines*****************************************************
+
+#Naming of plot
+levels(rd.roi.rel$roi) <- c("AntCoronaRad", "AntLimbIC", "BodyCC", "Cing", "EC", "Fornix",
+                            "Genu", "HippCing", "PostCoronaRad", "PostLimbIC", 
+                            "PostThalRad", "RetroLenticularIC", "SagStratum", "Splenium",
+                            "SupCoronaRad", "SupLongFasc", "Uncinate")
+
+p.rel.rd.NOAV<- ggplot(rd.roi.rel, aes(x=session,y=rd)) +
+  geom_line(aes(group=id),alpha=0.3) +
+  geom_point(alpha=0.3) +
+  scale_x_discrete('Session') +
+  ylab("Relative RD change") +
+  scale_y_continuous(limits=c(0.8, 1.2), breaks=c(0.8, 0.9, 1.0, 1.1, 1.2)) +
+  facet_wrap(~roi) +
+  guides(color=guide_legend(title="")) + 
+theme(legend.position = "none")
+p.rel.rd.NOAV
+
+
+ggsave("Rel_RD_by_roi_s2REF_noav.pdf",width=8,height=5)
+##****************************************************************
+
+
+```
+
+
+
+
+#Plot: Single Global metrics
+##CortGMVol
+```{r CortGMVol facet by subject, echo=FALSE, warning=FALSE}
+
+fs$session <- relevel(fs$session, ref="S1")
+p <- ggplot(fs, aes(x=session,y=CortexVol, group=id)) +
+  geom_point(alpha=0.8) +
+  geom_line(alpha=0.7) +
+  scale_x_discrete('Session') +
+  ylab("Thickness (mm)") +
+  facet_wrap(~id) +
+  guides(color=guide_legend(title=""))
+p
+
+ggsave("CortexVol_by_subject.pdf",width=8,height=5)
+
+```
+
+
+##Cth
+```{r CTh facet by subject, echo=FALSE, warning=FALSE}
+
+fs$session <- relevel(fs$session, ref="S1")
+p <- ggplot(fs, aes(x=session,y=cth.avg, group=id)) +
+  geom_point(alpha=0.8) +
+  geom_line(alpha=0.7) +
+  scale_x_discrete('Session') +
+  ylab("Thickness (mm)") +
+  facet_wrap(~id) +
+  guides(color=guide_legend(title=""))
+p
+
+ggsave("CTh_by_subject.pdf",width=8,height=5)
+
+```
+
+
+##SA
+```{r SA facet by subject, echo=FALSE, warning=FALSE}
+
+fs$session <- relevel(fs$session, ref="S1")
+p <- ggplot(fs, aes(x=session,y=sa.avg/100, group=id)) +
+  geom_point(alpha=0.8) +
+  geom_line(alpha=0.7) +
+  scale_x_discrete('Session') +
+  ylab(expression("Surface area"~(cm^{2}))) +
+  facet_wrap(~id) +
+  guides(color=guide_legend(title=""))
+p
+
+ggsave("SA_by_subject.pdf",width=8,height=5)
+
+```
+
+
+##CBF
+```{r CBF plot, eval=FALSE, echo=FALSE}
+
+fs$session <- relevel(fs$session, ref="S1")
+
+#CBF Plot
+p1 <- ggplot(fs,aes(x=session,y=cbf.cortex,group=id)) +
+  geom_line(alpha=0.7) +
+  geom_point(alpha=0.8) +
+  scale_x_discrete('Session') +
+  facet_wrap(~id) +
+  ylab("Cortical CBF (ml/100g/min)")
+p1
+
+ggsave("CBF_by subject.pdf",width=8,height=5)
+
+
+```
+
+
+##FA all
+```{r FA plot, eval=FALSE, echo=FALSE}
+fs$session <- relevel(fs$session, ref="S1")
+
+#FA Plot
+p1 <- ggplot(fs,aes(x=session,y=fa,group=id)) +
+  geom_line(alpha=0.7) +
+  geom_point(alpha=0.8) +
+  scale_x_discrete('Session') +
+  ylab("FA")
+
+p1
+
+ggsave("FA_all_session.pdf",width=8,height=5)
+
+```
+
+##FA by subject
+```{r FA plot facet, echo=FALSE, warning=FALSE}
+
+fs$session <- relevel(fs$session, ref="S1")
+#FA facet Plot by subject
+p1 <- ggplot(fs,aes(x=session,y=fa,group=id)) +
+  geom_line(alpha=0.7) +
+  geom_point(alpha=0.8) +
+  scale_x_discrete('Session') +
+  ylab("FA") +
+  facet_wrap(~id)
+p1
+
+ggsave("FA_by_subject.pdf",width=8,height=5)
+
+```
+
+
+
+##Hipp vol
+```{r Hipp facet by subject, echo=FALSE, warning=FALSE}
+fs$session <- relevel(fs$session, ref="S1")
+p <- ggplot(fs, aes(x=session,y=hipp.x, group=id)) +
+  geom_point(alpha=0.8) +
+  geom_line(alpha=0.7) +
+  scale_x_discrete('Session') +
+  ylab(expression("Volume"~(mm^{3}))) +
+  facet_wrap(~id) +
+  guides(color=guide_legend(title=""))
+p
+
+ggsave("Hipp_by_subject.pdf",width=8,height=5)
+
+```
+
+
+##Hipp/TIV
+```{r Hipp/ICV facet by subject, echo=FALSE, warning=FALSE}
+fs$session <- relevel(fs$session, ref="S1")
+#Use FS eTIV = ICV
+p <- ggplot(fs, aes(x=session,y=(hipp.x/ICV), group=id)) +
+  geom_point(alpha=0.8) +
+  geom_line(alpha=0.7) +
+  scale_x_discrete('Session') +
+  ylab("Ratio of Hippocampus/TIV") +
+  facet_wrap(~id) +
+  guides(color=guide_legend(title=""))
+p
+
+ggsave("Hipp_TIV_by_subject.pdf",width=8,height=5)
+
+```
+
+
+#STATS: GLOBAL
+##Priors
+```{r}
+
+# I am performing a lot of model fits and comparisons. I'll use a mild shrinkage prior on all the model estimates to shrink estimates to combat the multiple comparisons problem. The regularized horshoe is too stringent in this case. We have decided to go with a student_t prior with df=3, mean=0, and sd=5% the mean of the metric across sessions.
+
+prior_percent = 0.005    #0.005 is 0.5%
+
+#prior_name = paste0('student_t(3,0,',mean(fs$metic)*prior_percent,')', sep="")
+
+#To check diagnostics
+#check_hmc_diagnostics(brmsfit$fit)
+```
+
+##Total GM vol
+```{r GM model, eval=FALSE, echo=FALSE}
+
+ 
+
+#S2 as reference (1st scan at new location)
+fs$session <- relevel(fs$session, ref="S2")
+
+
+##
+## Model 0.5 -- Intercept + shared variance across move & within
+## 
+
+# totgm.nobias.common <- brm(TotGMVol ~  1 + (common|id),
+#            control = list(adapt_delta = 0.99, max_treedepth=15),
+#            iter = 10000, family=student(), data=fs,
+#            algorithm = c("sampling"))
+# summary(totgm.nobias.common)
+
+
+#Set a prior on the betas to act as a slight shrinkage prior to account for multiple comparisons. This has been defined as a student_t distribution with df=3, mean=0, and sd=5% of the mean value across sessions. 
+
+prior_name = paste0('student_t(3,0,',mean(fs$TotGMVol)/1000*prior_percent,')', sep="")
+
+
+##
+## Model 1 -- Bias + shared variance across move & within
+## 
+#0 chains
+totgm.bias.common <- brm(TotGMVol/1000 ~  session + (common|id),
+           control = list(adapt_delta = 0.999,max_treedepth=15),
+           iter = 10000, family=student(), data=fs,
+           algorithm = c("sampling"),
+           prior = set_prior(prior_name,class="b")) 
+summary(totgm.bias.common)
+
+
+
+##
+## Model 2 -- Int + Variable variance across move & within
+## 
+
+# totgm.nobias.session <- brm(TotGMVol ~  1 + (session|id),
+#            control = list(adapt_delta = 0.99,max_treedepth=15),
+#            iter = 10000, family=student(), data=fs,
+#            algorithm = c("sampling"))
+# summary(totgm.nobias.session)
+
+
+##
+## Model 3 -- Bias + Variable variance across move & within
+## There were 4 chains where the estimated Bayesian Fraction of Missing Information was low
+
+#There was 1 chains where the estimated Bayesian Fraction of Missing Information was low.
+totgm.bias.session <- brm(TotGMVol/1000 ~  session + (session|id),
+           control = list(adapt_delta = 0.99,max_treedepth=15),
+           iter = 10000, family=student(), data=fs,
+           algorithm = c("sampling"),
+           prior = set_prior(prior_name,class="b"))
+summary(totgm.bias.session)
+
+
+
+
+##Normalize to ICV
+#Set prior
+prior_name = paste0('student_t(3,0,',mean(100*fs$TotGMVol/fs$ICV)*prior_percent,')', sep="")
+
+#1 chain
+totgm.icv.bias.session <- brm(100*TotGMVol/ICV ~  session + (session|id),
+           control = list(adapt_delta = 0.999,max_treedepth=15),
+           iter = 10000, family=student(), data=fs,
+           algorithm = c("sampling"),
+          prior = set_prior(prior_name,class="b"))
+summary(totgm.icv.bias.session)
+#totgm.icv.bias.session <- readRDS("totgm.icv.bias.session.Rds")
+
+
+
+##
+## Get values for table 
+##
+per_diff(totgm.bias.session)
+per_diff(totgm.icv.bias.session)
+
+
+
+
+##
+## LOO to compare models, although most likely multiple observations with pareto k>0.7
+##
+#LOO(gm.nobias.common, gm.bias.common, gm.nobias.session, gm.bias.session)
+
+##
+## Valid model comparison.
+##
+#gm.kfold <-kfold(gm.nobias.common, gm.bias.common, gm.nobias.session, gm.bias.session, k=10)
+
+## Updated LOO package: 
+#The values in the elpd_diff and se_diff columns of the returned matrix are computed by making pairwise comparisons between each model and the model with the largest ELPD (the model in the first row). For this reason the elpd_diff column will always have the value 0 in the first row (i.e., the difference between the preferred model and itself) and negative values in subsequent rows for the remaining models.
+#largest ELPD (smallest LOOIC) indicates a better fit. Preferred model is in the first row. All subsequent models are negative and indicate worse fit relative to the first model in the matrix. 
+
+# totgm.bias.common <- add_criterion(totgm.bias.common,"kfold")
+# totgm.bias.session <- add_criterion(totgm.bias.session,"kfold")
+# 
+# totgm.kfold <- loo_compare(totgm.bias.common, totgm.bias.session, criterion="kfold")
+# 
+# #Get ELPD for the common model: 
+# print(gm.bias.common$kfold$estimates)
+
+```
+
+
+##Cortical GM vol
+```{r Cortical GM model, eval=FALSE, echo=FALSE}
+
+#S2 as reference (1st scan at new location)
+fs$session <- relevel(fs$session, ref="S2")
+
+prior_name = paste0('student_t(3,0,',mean(fs$CortexVol)*prior_percent,')', sep="")
+
+##
+## Model 1 -- Bias + shared variance across move & within
+## 
+#0chains
+cortgm.bias.common <- brm(CortexVol ~  session + (common|id),
+           control = list(adapt_delta = 0.99,max_treedepth=15),
+           iter = 10000, family=student(), data=fs,
+           algorithm = c("sampling"),
+           prior = set_prior(prior_name,class="b"))
+summary(cortgm.bias.common)
+
+
+##
+## Model 2 -- Bias + Variable variance across move & within
+## 
+
+#1 chain
+cortgm.bias.session <- brm(CortexVol ~  session + (session|id),
+           control = list(adapt_delta = 0.99,max_treedepth=15),
+           iter = 15000, family=student(), data=fs,
+           algorithm = c("sampling"), 
+           prior = set_prior(prior_name,class="b"))
+summary(cortgm.bias.session)
+
+
+##
+## Model3 -- Bias + Variable variance across move & within / ICV
+## 
+prior_name = paste0('student_t(3,0,',mean(fs$CortexVol/fs$ICV)*prior_percent,')', sep="")
+# 1 chain
+cortgm.icv.bias.session <- brm(CortexVol/ICV ~  session + (session|id),
+           control = list(adapt_delta = 0.99,max_treedepth=15),
+           iter = 10000, family=student(), data=fs,
+           algorithm = c("sampling"), 
+           prior = set_prior(prior_name,class="b"))
+summary(cortgm.icv.bias.session)
+
+
+##
+## Get values for table
+##
+per_diff(cortgm.bias.session)
+
+
+##
+## KFOLD to compare models, as there will likely be a few/multiple observations 
+## with pareto k>0.7
+##
+# 
+# cortgm.bias.common <- add_criterion(cortgm.bias.common,"kfold")
+# cortgm.bias.session <- add_criterion(cortgm.bias.session,"kfold")
+# 
+# cortgm.kfold <- loo_compare(cortgm.bias.common, cortgm.bias.session, criterion="kfold")
+# 
+# #Get ELPD for the common model: 
+# print(cortgm.bias.common$kfold$estimates)
+
+```
+
+
+##SubCortical GM vol
+```{r SubCortical GM model, eval=TRUE, echo=FALSE}
+
+#S2 as reference (1st scan at new location)
+fs$session <- relevel(fs$session, ref="S2")
+ 
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$SubCortGMVol)*prior_percent,')', sep="")
+
+##
+## Model 1 -- Bias + shared variance across move & within
+## 
+#0 Chains
+subcortgm.bias.common <- brm(SubCortGMVol ~  session + (common|id),
+           control = list(adapt_delta = 0.99,max_treedepth=15),
+           iter = 10000, family=student(), data=fs,
+           algorithm = c("sampling"),
+           prior = set_prior(prior_name,class="b"))
+summary(subcortgm.bias.common)
+
+
+##
+## Model 2 -- Bias + Variable variance across move & within
+## 
+# 0 Chain
+subcortgm.bias.session <- brm(SubCortGMVol ~  session + (session|id),
+           control = list(adapt_delta = 0.99,max_treedepth=15),
+           iter = 10000, family=student(), data=fs,
+           algorithm = c("sampling"), 
+           prior = set_prior(prior_name,class="b"))
+summary(subcortgm.bias.session)
+
+
+##
+## Model 3 -- Bias + Variable variance across move & within / ICV
+## 
+
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(10000*fs$SubCortGMVol/fs$ICV)*prior_percent,')', sep="")
+
+#2 chains. 
+subcortgm.icv.bias.session <- brm(10000*SubCortGMVol/ICV ~  session + (session|id),
+           control = list(adapt_delta = 0.99,max_treedepth=15),
+           iter = 15000, family=student(), data=fs,
+           algorithm = c("sampling"), 
+          prior = set_prior(prior_name,class="b"))
+summary(subcortgm.icv.bias.session)
+
+##
+## Get values for table
+##
+per_diff(subcortgm.bias.session)
+
+
+##
+## KFOLD to compare models, as there will likely be a few/multiple observations 
+## with pareto k>0.7
+##
+
+# subcortgm.bias.common <- add_criterion(subcortgm.bias.common,"kfold")
+# subcortgm.bias.session <- add_criterion(subcortgm.bias.session,"kfold")
+# 
+# subcortgm.kfold <- loo_compare(subcortgm.bias.common, subcortgm.bias.session, criterion="kfold")
+# 
+# #Get ELPD for the common model: 
+# print(subcortgm.bias.common$kfold$estimates)
+
+```
+
+
+##WM vol
+```{r WM model, eval=TRUE, echo=FALSE}
+
+#S2 as reference (1st scan at new location)
+fs$session <- relevel(fs$session, ref="S2")
+ 
+#Set priors
+#prior_name = paste0('student_t(3,0,',mean(fs$WMVol/1000)*prior_percent,')', sep="")
+#Set prior
+prior_name = paste0('student_t(1,0,',mean(fs$WMVol)/1000*0.5,')', sep="")
+
+
+
+##
+## Model 1 -- Bias + shared variance across move & within
+## 
+#0 chains
+wm.bias.common <- brm(WMVol/1000 ~  session + (common|id),
+           control = list(adapt_delta = 0.99,max_treedepth=15),
+           iter = 10000, family=student(), data=fs,
+           algorithm = c("sampling"),
+           prior = set_prior(prior_name,class="b"))
+summary(wm.bias.common)
+
+
+##
+## Model 2 -- Bias + Variable variance across move & within
+## 
+#4 chains, but close to 2. The best I can do. student_t(1,0,mean*.5)
+wm.bias.session <- brm(WMVol/1000 ~  session + (session|id),
+           control = list(adapt_delta = 0.999,max_treedepth=15),
+           iter = 5000, family=student(), data=fs,
+           algorithm = c("sampling"),
+           prior = set_prior(prior_name, class = "b"))
+summary(wm.bias.session)
+
+wm.bias.session <- readRDS("wm.bias.session.Rds")
+#see how bad the fit is
+check_hmc_diagnostics(wm.bias.session$fit)
+
+
+
+##
+## Model 3 -- Bias + Variable variance across move & within /ICV
+## 
+
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$WMVol/fs$ICV)*1000*prior_percent,')', sep="")
+
+#4 chains.
+wm.icv.bias.session <- brm(1000*WMVol/ICV ~  session + (session|id),
+           control = list(adapt_delta = 0.999,max_treedepth=15),
+           iter = 5000, family=student(), data=fs,
+           algorithm = c("sampling"),
+           prior = set_prior(prior_name,class="b"))
+summary(wm.icv.bias.session)
+
+#wm.icv.bias.session <- readRDS("wm.icv.bias.session.Rds")
+#see how bad the fit is
+check_hmc_diagnostics(wm.icv.bias.session$fit)
+
+##
+## Get values for table
+##
+per_diff(wm.bias.session)
+
+
+##
+## KFOLD to compare models, as there will likely be a few/multiple observations 
+## with pareto k>0.7
+##
+
+# wm.bias.common <- add_criterion(wm.bias.common,"kfold")
+# wm.bias.session <- add_criterion(wm.bias.session,"kfold")
+# 
+# wm.kfold <- loo_compare(wm.bias.common, wm.bias.session, criterion="kfold")
+# 
+# #Get ELPD for the common model: 
+# print(wm.bias.common$kfold$estimates)
+
+```
+
+
+##Vent vol
+```{r Ventricle model, eval=TRUE, echo=FALSE}
+
+#S2 as reference (1st scan at new location)
+fs$session <- relevel(fs$session, ref="S2")
+
+prior_percent <- 0.01
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$VentVol/10000)*prior_percent,')', sep="")
+ 
+##
+## Model 1 -- Bias + shared variance across move & within
+## 
+#0 chains
+vent.bias.common <- brm(VentVol/10000 ~  session + (common|id),
+           control = list(adapt_delta = 0.99,max_treedepth=15),
+           iter = 10000, family=student(), data=fs,
+           algorithm = c("sampling"),
+           prior = set_prior(prior_name,class="b"))
+summary(vent.bias.common)
+
+
+##
+## Model 2 -- Bias + Variable variance across move & within
+## 
+#2 chains
+vent.bias.session <- brm(VentVol/10000 ~  session + (session|id),
+           control = list(adapt_delta = 0.99,max_treedepth=15),
+           iter = 10000, family=student(), data=fs,
+           algorithm = c("sampling"),
+           prior = set_prior(prior_name,class="b"))
+summary(vent.bias.session)
+
+##
+## Model 3 -- Bias + Variable variance across move & within
+## 
+prior_percent <- 0.2
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(1000*fs$VentVol/fs$ICV)*prior_percent,')', sep="")
+
+# 1chains tailess percent = .2
+vent.icv.bias.session <- brm(1000*VentVol/ICV ~  session + (session|id),
+           control = list(adapt_delta = 0.99,max_treedepth=15),
+           iter = 5000, family=student(), data=fs,
+           algorithm = c("sampling"),
+          prior = set_prior(prior_name,class="b"))
+summary(vent.icv.bias.session)
+ 
+
+##
+## Get values for table
+##
+per_diff(vent.bias.session)
+
+
+##
+## KFOLD to compare models, as there will likely be a few/multiple observations 
+## with pareto k>0.7
+##
+
+# vent.bias.common <- add_criterion(vent.bias.common,"kfold")
+# vent.bias.session <- add_criterion(vent.bias.session,"kfold")
+# 
+# vent.kfold <- loo_compare(vent.bias.common, vent.bias.session, criterion="kfold")
+# 
+# #Get ELPD for the common model: 
+# print(vent.bias.common$kfold$estimates)
+
+```
+
+
+
+##CTh
+```{r CTh model, eval=TRUE, echo=FALSE}
+
+#S2 as reference (1st scan at new location)
+fs$session <- relevel(fs$session, ref="S2")
+ 
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$cth.avg)*prior_percent,')', sep="")
+
+##
+## Model 1 -- Bias + shared variance across move & within
+## 
+#0chains
+cth.bias.common <- brm(cth.avg ~  session + (common|id),
+           control = list(adapt_delta = 0.99,max_treedepth=15),
+           iter = 10000, family=student(), data=fs,
+           algorithm = c("sampling"),
+           prior = set_prior(prior_name,class="b"))
+summary(cth.bias.common)
+
+
+##
+## Model 2 -- Bias + Variable variance across move & within
+## 
+#1 chain
+cth.bias.session <- brm(cth.avg ~  session + (session|id),
+           control = list(adapt_delta = 0.99,max_treedepth=15),
+           iter = 10000, family=student(), data=fs,
+           algorithm = c("sampling"),
+           prior = set_prior(prior_name,class="b"))
+summary(cth.bias.session)
+
+
+##
+## Get values for table
+##
+per_diff(cth.bias.session)
+
+
+##
+## KFOLD to compare models, as there will likely be a few/multiple observations 
+## with pareto k>0.7
+##
+
+# cth.bias.common <- add_criterion(cth.bias.common,"kfold")
+# cth.bias.session <- add_criterion(cth.bias.session,"kfold")
+# 
+# cth.kfold <- loo_compare(cth.bias.common, cth.bias.session, criterion="kfold")
+# 
+# #Get ELPD for the common model: 
+# print(cth.bias.common$kfold$estimates)
+
+```
+
+
+##SA
+```{r SA model, eval=TRUE, echo=FALSE}
+
+#S2 as reference (1st scan at new location)
+fs$session <- relevel(fs$session, ref="S2")
+ 
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$sa.avg)/1000*prior_percent,')', sep="")
+
+
+##
+## Model 1 -- Bias + shared variance across move & within
+## 
+
+#0 chains
+sa.bias.common <- brm(sa.avg/1000 ~  session + (common|id),
+           control = list(adapt_delta = 0.99,max_treedepth=15),
+           iter = 10000, family=student(), data=fs,
+           algorithm = c("sampling"),
+           prior = set_prior(prior_name,class="b"))
+summary(sa.bias.common)
+
+
+##
+## Model 2 -- Bias + Variable variance across move & within
+## 
+
+#2 chains
+sa.bias.session <- brm(sa.avg/1000 ~  session + (session|id),
+           control = list(adapt_delta = 0.99,max_treedepth=15),
+           iter = 5000, family=student(), data=fs,
+           algorithm = c("sampling"),
+           prior = set_prior(prior_name, class = "b"))
+summary(sa.bias.session)
+check_hmc_diagnostics(sa.bias.session$fit)
+
+
+##
+## Model 3 -- Bias + Variable variance across move & within / ICV
+##
+
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$sa.avg/fs$ICV)*1000*prior_percent,')', sep="")
+
+#2 chains (percent = 0.1)
+sa.icv.bias.session <- brm(1000*sa.avg/ICV ~  session + (session|id),
+           control = list(adapt_delta = 0.999,max_treedepth=15),
+           iter = 5000, family=student(), data=fs,
+           algorithm = c("sampling"),
+           prior = set_prior(prior_name,class="b"))
+summary(sa.icv.bias.session)
+
+#sa.icv.bias.session <- readRDS("sa.icv.bias.session.Rds")
+
+
+##
+## Get values for table
+##
+per_diff(sa.bias.session)
+
+
+
+##
+## KFOLD to compare models, as there will likely be a few/multiple observations 
+## with pareto k>0.7
+##
+
+# sa.bias.common <- add_criterion(sa.bias.common,"kfold")
+# sa.bias.session <- add_criterion(sa.bias.session,"kfold")
+# 
+# sa.kfold <- loo_compare(sa.bias.common, sa.bias.session, criterion="kfold")
+# 
+# #Get ELPD for the common model: 
+# print(sa.bias.common$kfold$estimates)
+
+```
+
+
+##CBF
+```{r Cortical CBF model, eval=TRUE, echo=FALSE}
+
+#S2 as reference (1st scan at new location)
+fs$session <- relevel(fs$session, ref="S2")
+ 
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$cbf.cortex)*prior_percent,')', sep="")
+
+##
+## Model 1 -- Bias + shared variance across move & within
+## 
+#0 chains
+cbf.bias.common <- brm(cbf.cortex ~  session + (common|id),
+           control = list(adapt_delta = 0.99,max_treedepth=15),
+           iter = 10000, family=student(), data=fs,
+           algorithm = c("sampling"),
+           prior = set_prior(prior_name,class="b"))
+summary(cbf.bias.common)
+
+
+##
+## Model 2 -- Bias + Variable variance across move & within
+## 
+# 0 chains
+cbf.bias.session <- brm(cbf.cortex ~  session + (session|id),
+           control = list(adapt_delta = 0.99,max_treedepth=15),
+           iter = 10000, family=student(), data=fs,
+           algorithm = c("sampling"),
+           prior = set_prior(prior_name,class="b"))
+summary(cbf.bias.session)
+
+
+##
+## Get values for table
+##
+per_diff(cbf.bias.session)
+
+
+##
+## KFOLD to compare models, as there will likely be a few/multiple observations 
+## with pareto k>0.7
+##
+
+# cbf.bias.common <- add_criterion(cbf.bias.common,"kfold")
+# cbf.bias.session <- add_criterion(cbf.bias.session,"kfold")
+# 
+# cbf.kfold <- loo_compare(cbf.bias.common, cbf.bias.session, criterion="kfold")
+# 
+# #Get ELPD for the common model: 
+# print(cbf.bias.common$kfold$estimates)
+
+```
+
+
+##FA
+```{r Skeletal FA model, eval=TRUE, echo=FALSE}
+
+#S2 as reference (1st scan at new location)
+fs$session <- relevel(fs$session, ref="S2")
+ 
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$fa.s)*prior_percent,')', sep="")
+
+
+##
+## Model 1 -- Bias + shared variance across move & within
+## 
+#0 chains
+fa.bias.common <- brm(fa.s ~  session + (common|id),
+           control = list(adapt_delta = 0.99,max_treedepth=15),
+           iter = 10000, family=student(), data=fs,
+           algorithm = c("sampling"),
+           prior = set_prior(prior_name,class="b"))
+summary(fa.bias.common)
+
+
+##
+## Model 2 -- Bias + Variable variance across move & within
+## 
+# 0 chains
+fa.bias.session <- brm(fa.s ~  session + (session|id),
+           control = list(adapt_delta = 0.99,max_treedepth=15),
+           iter = 10000, family=student(), data=fs,
+           algorithm = c("sampling"),
+           prior = set_prior(prior_name,class="b"))
+summary(fa.bias.session)
+
+
+##
+## Get values for table
+##
+per_diff(fa.bias.session)
+
+
+##
+## KFOLD to compare models, as there will likely be a few/multiple observations 
+## with pareto k>0.7
+##
+
+# fa.bias.common <- add_criterion(fa.bias.common,"kfold")
+# fa.bias.session <- add_criterion(fa.bias.session,"kfold")
+# 
+# fa.kfold <- loo_compare(fa.bias.common, fa.bias.session, criterion="kfold")
+# 
+# #Get ELPD for the common model: 
+# print(fa.bias.common$kfold$estimates)
+
+```
+
+
+##MD
+```{r Skeletal MD model, eval=TRUE, echo=FALSE}
+
+#S2 as reference (1st scan at new location)
+fs$session <- relevel(fs$session, ref="S2")
+
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$md.s)*prior_percent,')', sep="")
+ 
+##
+## Model 1 -- Bias + shared variance across move & within
+## 
+# 0 chains
+md.bias.common <- brm(md.s ~  session + (common|id),
+           control = list(adapt_delta = 0.99,max_treedepth=15),
+           iter = 10000, family=student(), data=fs,
+           algorithm = c("sampling"),
+           prior = set_prior(prior_name,class="b"))
+summary(md.bias.common)
+
+
+##
+## Model 2 -- Bias + Variable variance across move & within
+## 
+# 2chains
+md.bias.session <- brm(md.s ~  session + (session|id),
+           control = list(adapt_delta = 0.99,max_treedepth=15),
+           iter = 15000, family=student(), data=fs,
+           algorithm = c("sampling"),
+           prior = set_prior(prior_name,class="b"))
+summary(md.bias.session)
+
+
+##
+## Get values for table
+##
+per_diff(md.bias.session)
+
+
+##
+## KFOLD to compare models, as there will likely be a few/multiple observations 
+## with pareto k>0.7
+##
+
+# md.bias.common <- add_criterion(md.bias.common,"kfold")
+# md.bias.session <- add_criterion(md.bias.session,"kfold")
+# 
+# md.kfold <- loo_compare(md.bias.common, md.bias.session, criterion="kfold")
+# 
+# #Get ELPD for the common model: 
+# print(md.bias.common$kfold$estimates)
+
+```
+
+
+##AD
+```{r Skeletal AD model, eval=TRUE, echo=FALSE}
+
+#S2 as reference (1st scan at new location)
+fs$session <- relevel(fs$session, ref="S2")
+
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$ad.s)*100*prior_percent,')', sep="")
+ 
+##
+## Model 1 -- Bias + shared variance across move & within
+## 
+#0 chains
+ad.bias.common <- brm(100*ad.s ~  session + (common|id),
+           control = list(adapt_delta = 0.99,max_treedepth=15),
+           iter = 10000, family=student(), data=fs,
+           algorithm = c("sampling"),
+           prior = set_prior(prior_name,class="b"))
+summary(ad.bias.common)
+
+
+##
+## Model 2 -- Bias + Variable variance across move & within
+## 
+#2 chains
+ad.bias.session <- brm(100*ad.s ~  session + (session|id),
+           control = list(adapt_delta = 0.99,max_treedepth=15),
+           iter = 10000, family=student(), data=fs,
+           algorithm = c("sampling"),
+           prior = set_prior(prior_name,class="b"))
+summary(ad.bias.session)
+
+
+##
+## Get values for table
+##
+per_diff(ad.bias.session)
+
+
+##
+## KFOLD to compare models, as there will likely be a few/multiple observations 
+## with pareto k>0.7
+##
+
+# ad.bias.common <- add_criterion(ad.bias.common,"kfold")
+# ad.bias.session <- add_criterion(ad.bias.session,"kfold")
+# 
+# ad.kfold <- loo_compare(ad.bias.common, ad.bias.session, criterion="kfold")
+# 
+# #Get ELPD for the common model: 
+# print(ad.bias.common$kfold$estimates)
+
+```
+
+
+##RD
+```{r Skeletal RD model, eval=TRUE, echo=FALSE}
+
+#S2 as reference (1st scan at new location)
+fs$session <- relevel(fs$session, ref="S2")
+
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$rd.s)*100*prior_percent,')', sep="")
+ 
+##
+## Model 1 -- Bias + shared variance across move & within
+## 
+# 0 chains
+rd.bias.common <- brm(100*rd.s ~  session + (common|id),
+           control = list(adapt_delta = 0.99,max_treedepth=15),
+           iter = 10000, family=student(), data=fs,
+           algorithm = c("sampling"),
+           prior = set_prior(prior_name,class="b"))
+summary(rd.bias.common)
+
+
+##
+## Model 2 -- Bias + Variable variance across move & within
+## 
+#2 chains
+rd.bias.session <- brm(100*rd.s ~  session + (session|id),
+           control = list(adapt_delta = 0.999,max_treedepth=15),
+           iter = 15000, family=student(), data=fs,
+           algorithm = c("sampling"),
+           prior = set_prior(prior_name,class="b"))
+summary(rd.bias.session)
+
+
+##
+## Get values for table
+##
+per_diff(rd.bias.session)
+
+
+##
+## KFOLD to compare models, as there will likely be a few/multiple observations 
+## with pareto k>0.7
+##
+
+# rd.bias.common <- add_criterion(rd.bias.common,"kfold")
+# rd.bias.session <- add_criterion(rd.bias.session,"kfold")
+# 
+# rd.kfold <- loo_compare(rd.bias.common, rd.bias.session, criterion="kfold")
+# 
+# #Get ELPD for the common model: 
+# print(rd.bias.common$kfold$estimates)
+
+```
+
+
+
+
+#ICC & wsCV
+##TotGMVol ICC
+```{r Total GM Vol ICC, echo=FALSE}
+
+
+## Either calculation works for ICC(2) -- ICC2: A random sample of k judges rate each target.
+## The measure is one of absolute agreement in the ratings. 
+## Found as (MSB- MSE)/(MSB + (nr-1)*MSE + nr*(MSJ-MSE)/nc)
+## Option 1: using library(psych) & library(lme4)
+#library(psych)
+#library(lme4)
+# gm.icc.01a <- ICC(gm.f01[,2:3])
+# gm.icc.12 <- ICC(gm.f12[,2:3])
+# Both these give the same answer as the Matlab script IPN_icc.m
+
+
+## Option 2: Use library(irr): "subjects & raters randomly chosen from a bigger pool of persons = "twoway"" And we are interested in absolute agreement = "agreement", and only a single measurement, so unit="single". However, I think that this treats both scanner and subject as random variables. I actually want a mixed model, with scanner as fixed and subject as random, hence option 3.
+#gm.icc.01 <- icc(gm.f01[,2:3],model="twoway",type="agreement", unit="single")
+#gm.icc.12 <- icc(gm.f12[,2:3],model="twoway",type="agreement", unit="single")
+
+
+## Option 3: Use library(sjstats)
+## Run a brms model, specifcally modelling scanner as a fixed effect and subject as a random effect (1|id), then use sjstats::icc to calculate ICC of a bayesian model with appropriate CIs.
+
+#Filter dataset for only S1 & S2. Following code needs this to be a dataframe.
+tot.gm.12 <- fs %>% 
+  select(id,session,TotGMVol,ICV) %>% 
+  filter(session!="S3") %>% 
+  as.data.frame()
+
+
+#Fit mixed effects model with brms
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$TotGMVol)*prior_percent,')', sep="")
+
+tot.gm.brm.12 <- brm(TotGMVol ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"), 
+      prior = set_prior(prior_name,class="b"), data=tot.gm.12)
+summary(tot.gm.brm.12)
+
+#Fit mixed effects model with brms accounting for ICV
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$TotGMVol/fs$ICV)*prior_percent,')', sep="")
+
+tot.gm.brm.12.icv <- brm(TotGMVol/ICV ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+      prior = set_prior(prior_name,class="b"), data=tot.gm.12)
+summary(tot.gm.brm.12.icv)
+
+#Calculate ICC & CIs
+#Note* I ran sjstats on my PC as sjstats was not working on the eos.
+tot.gm.brm.icc.12 <- sjstats::icc(tot.gm.brm.12, prob=0.95)   
+tot.gm.brm.icc.12.icv <- sjstats::icc(tot.gm.brm.12.icv, prob=0.95) 
+##*******************************************  
+  
+
+#Filter dataset for only S2 & S3
+tot.gm.23 <- fs %>% 
+  select(id,session,TotGMVol,ICV) %>% 
+  filter(session!="S1") %>% 
+  as.data.frame()
+
+#Fit mixed effects model with brms
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$TotGMVol)*prior_percent,')', sep="")
+
+tot.gm.brm.23 <- brm(TotGMVol ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=tot.gm.23)
+summary(tot.gm.brm.23)
+
+#Fit mixed effects model with brms
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$TotGMVol/fs$ICV)*prior_percent,')', sep="")
+
+tot.gm.brm.23.icv <- brm(TotGMVol/ICV ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=tot.gm.23)
+summary(tot.gm.brm.23.icv)
+
+#Calculate ICC & CIs
+tot.gm.brm.icc.23 <- sjstats::icc(tot.gm.brm.23, prob=0.95) 
+tot.gm.brm.icc.23.icv <- sjstats::icc(tot.gm.brm.23.icv, prob=0.95)
+##*******************************************
+
+
+
+
+##
+## wsCV: Set up input dataframe.
+##
+tot.gm.s12 <- tot.gm.12 %>% 
+  spread(session,TotGMVol)
+
+
+tot.gm.s23 <- tot.gm.23 %>% 
+  spread(session,TotGMVol)
+
+
+## call the wsCV function
+tot.gm.wsCV.s12 <- wsCV.s12(tot.gm.s12) 
+tot.gm.wsCV.s23 <- wsCV.s23(tot.gm.s23)
+
+
+```
+
+
+##Cortical GM vol ICC
+```{r Cortical GM Vol ICC, echo=FALSE}
+
+#Metric 'CortexVol'
+
+
+
+#Filter dataset for only S1 & S2. Following code needs this to be a dataframe.
+cort.gm.12 <- fs %>% 
+  select(id,session,CortexVol,ICV) %>% 
+  filter(session!="S3") %>% 
+  as.data.frame()
+
+
+#Fit mixed effects model with brms
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$CortexVol)*prior_percent,')', sep="")
+
+cort.gm.brm.12 <- brm(CortexVol ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=cort.gm.12)
+summary(cort.gm.brm.12)
+
+#Fit mixed effects model with brms accounting for ICV
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$CortexVol/fs$ICV)*prior_percent,')', sep="")
+
+cort.gm.brm.12.icv <- brm(CortexVol/ICV ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=cort.gm.12)
+summary(cort.gm.brm.12.icv)
+
+#Calculate ICC & CIs
+cort.gm.brm.icc.12 <- sjstats::icc(cort.gm.brm.12, prob=0.95)   
+cort.gm.brm.icc.12.icv <- sjstats::icc(cort.gm.brm.12.icv, prob=0.95) 
+##*******************************************  
+  
+
+#Filter dataset for only S2 & S3
+cort.gm.23 <- fs %>% 
+  select(id,session,CortexVol,ICV) %>% 
+  filter(session!="S1") %>% 
+  as.data.frame()
+
+#Fit mixed effects model with brms
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$CortexVol)*prior_percent,')', sep="")
+
+cort.gm.brm.23 <- brm(CortexVol ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=cort.gm.23)
+summary(cort.gm.brm.23)
+
+#Fit mixed effects model with brms
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$CortexVol/fs$ICV)*prior_percent,')', sep="")
+
+cort.gm.brm.23.icv <- brm(CortexVol/ICV ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=cort.gm.23)
+summary(cort.gm.brm.23.icv)
+
+#Calculate ICC & CIs
+cort.gm.brm.icc.23 <- sjstats::icc(cort.gm.brm.23, prob=0.95) 
+cort.gm.brm.icc.23.icv <- sjstats::icc(cort.gm.brm.23.icv, prob=0.95)
+##*******************************************
+
+
+
+##
+## wsCV
+##
+cort.gm.s12 <- cort.gm.12 %>% 
+  spread(session,CortexVol)
+
+
+cort.gm.s23 <- cort.gm.23 %>% 
+  spread(session,CortexVol)
+
+## call the wsCV function
+cort.gm.wsCV.s12 <- wsCV.s12(cort.gm.s12) 
+cort.gm.wsCV.s23 <- wsCV.s23(cort.gm.s23)
+
+
+```
+
+
+
+##SubCortical GM vol ICC
+```{r SubCortical GM Vol ICC, echo=FALSE}
+
+#Metric  'SubCortGMVol'
+
+
+#Filter dataset for only S1 & S2. Following code needs this to be a dataframe.
+subcort.gm.12 <- fs %>% 
+  select(id,session,SubCortGMVol,ICV) %>% 
+  filter(session!="S3") %>% 
+  as.data.frame()
+
+
+#Fit mixed effects model with brms
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$SubCortGMVol)*prior_percent,')', sep="")
+
+subcort.gm.brm.12 <- brm(SubCortGMVol ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=subcort.gm.12)
+summary(subcort.gm.brm.12)
+
+#Fit mixed effects model with brms accounting for ICV
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$SubCortGMVol/fs$ICV)*prior_percent,')', sep="")
+
+subcort.gm.brm.12.icv <- brm(SubCortGMVol/ICV ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=subcort.gm.12)
+summary(subcort.gm.brm.12.icv)
+
+#Calculate ICC & CIs
+subcort.gm.brm.icc.12 <- sjstats::icc(subcort.gm.brm.12, prob=0.95)   
+subcort.gm.brm.icc.12.icv <- sjstats::icc(subcort.gm.brm.12.icv, prob=0.95) 
+##*******************************************  
+  
+
+#Filter dataset for only S2 & S3
+subcort.gm.23 <- fs %>% 
+  select(id,session,SubCortGMVol,ICV) %>% 
+  filter(session!="S1") %>% 
+  as.data.frame()
+
+#Fit mixed effects model with brms
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$SubCortGMVol)*prior_percent,')', sep="")
+
+subcort.gm.brm.23 <- brm(SubCortGMVol ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=subcort.gm.23)
+summary(subcort.gm.brm.23)
+
+#Fit mixed effects model with brms
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$SubCortGMVol/fs$ICV)*prior_percent,')', sep="")
+
+subcort.gm.brm.23.icv <- brm(SubCortGMVol/ICV ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=subcort.gm.23)
+summary(subcort.gm.brm.23.icv)
+
+#Calculate ICC & CIs
+subcort.gm.brm.icc.23 <- sjstats::icc(subcort.gm.brm.23, prob=0.95) 
+subcort.gm.brm.icc.23.icv <- sjstats::icc(subcort.gm.brm.23.icv, prob=0.95)
+##*******************************************
+
+
+
+##
+## wsCV
+##
+subcort.gm.s12 <- subcort.gm.12 %>% 
+  spread(session,SubCortGMVol)
+
+
+subcort.gm.s23 <- subcort.gm.23 %>% 
+  spread(session,SubCortGMVol)
+
+## call the wsCV function
+subcort.gm.wsCV.s12 <- wsCV.s12(subcort.gm.s12) 
+subcort.gm.wsCV.s23 <- wsCV.s23(subcort.gm.s23)
+
+
+```
+
+
+##WM vol ICC
+```{r WM Vol ICC, echo=FALSE}
+
+#Metric 'WMVol'
+
+
+#Filter dataset for only S1 & S2. Following code needs this to be a dataframe.
+wm.12 <- fs %>% 
+  select(id,session,WMVol,ICV) %>% 
+  filter(session!="S3") %>% 
+  as.data.frame()
+
+
+#Fit mixed effects model with brms
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$WMVol)*prior_percent,')', sep="")
+
+wm.brm.12 <- brm(WMVol ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=wm.12)
+summary(wm.brm.12)
+
+#Fit mixed effects model with brms accounting for ICV
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$WMVol/fs$ICV)*prior_percent,')', sep="")
+
+wm.brm.12.icv <- brm(WMVol/ICV ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=wm.12)
+summary(wm.brm.12.icv)
+
+#Calculate ICC & CIs
+wm.brm.icc.12 <- sjstats::icc(wm.brm.12, prob=0.95)   
+wm.brm.icc.12.icv <- sjstats::icc(wm.brm.12.icv, prob=0.95) 
+##*******************************************  
+  
+
+#Filter dataset for only S2 & S3
+wm.23 <- fs %>% 
+  select(id,session,WMVol,ICV) %>% 
+  filter(session!="S1") %>% 
+  as.data.frame()
+
+#Fit mixed effects model with brms
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$WMVol)*prior_percent,')', sep="")
+
+wm.brm.23 <- brm(WMVol ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=wm.23)
+summary(wm.brm.23)
+
+#Fit mixed effects model with brms
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$WMVol/fs$ICV)*prior_percent,')', sep="")
+
+wm.brm.23.icv <- brm(WMVol/ICV ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=wm.23)
+summary(wm.brm.23.icv)
+
+#Calculate ICC & CIs
+wm.brm.icc.23 <- sjstats::icc(wm.brm.23, prob=0.95) 
+wm.brm.icc.23.icv <- sjstats::icc(wm.brm.23.icv, prob=0.95)
+##*******************************************
+
+
+
+##
+## wsCV
+##
+wm.s12 <- wm.12 %>% 
+  spread(session,WMVol)
+
+
+wm.s23 <- wm.23 %>% 
+  spread(session,WMVol)
+
+## call the wsCV function
+wm.wsCV.s12 <- wsCV.s12(wm.s12) 
+wm.wsCV.s23 <- wsCV.s23(wm.s23)
+
+
+```
+
+
+##Vent vol ICC
+```{r WM Vol ICC, echo=FALSE}
+
+#Metric 'VentVol'
+
+
+#Filter dataset for only S1 & S2. Following code needs this to be a dataframe.
+vent.12 <- fs %>% 
+  select(id,session,VentVol,ICV) %>% 
+  filter(session!="S3") %>% 
+  as.data.frame()
+
+
+#Fit mixed effects model with brms
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$VentVol)*prior_percent,')', sep="")
+
+vent.brm.12 <- brm(VentVol ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"), 
+       prior = set_prior(prior_name,class="b"), data=vent.12)
+summary(vent.brm.12)
+
+#Fit mixed effects model with brms accounting for ICV
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$VentVol/fs$ICV)*prior_percent,')', sep="")
+
+vent.brm.12.icv <- brm(VentVol/ICV ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=vent.12)
+summary(vent.brm.12.icv)
+
+#Calculate ICC & CIs
+vent.brm.icc.12 <- sjstats::icc(vent.brm.12, prob=0.95)   
+vent.brm.icc.12.icv <- sjstats::icc(vent.brm.12.icv, prob=0.95) 
+##*******************************************  
+  
+
+#Filter dataset for only S2 & S3
+vent.23 <- fs %>% 
+  select(id,session,VentVol,ICV) %>% 
+  filter(session!="S1") %>% 
+  as.data.frame()
+
+#Fit mixed effects model with brms
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$VentVol)*prior_percent,')', sep="")
+
+vent.brm.23 <- brm(VentVol ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=vent.23)
+summary(vent.brm.23)
+
+#Fit mixed effects model with brms
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$VentVol/fs$ICV)*prior_percent,')', sep="")
+
+vent.brm.23.icv <- brm(VentVol/ICV ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=vent.23)
+summary(vent.brm.23.icv)
+
+#Calculate ICC & CIs
+vent.brm.icc.23 <- sjstats::icc(vent.brm.23, prob=0.95) 
+vent.brm.icc.23.icv <- sjstats::icc(vent.brm.23.icv, prob=0.95)
+##*******************************************
+
+
+
+##
+## wsCV
+##
+vent.s12 <- vent.12 %>% 
+  spread(session,VentVol)
+
+
+vent.s23 <- vent.23 %>% 
+  spread(session,VentVol)
+
+## call the wsCV function
+vent.wsCV.s12 <- wsCV.s12(vent.s12) 
+vent.wsCV.s23 <- wsCV.s23(vent.s23)
+
+
+```
+
+
+
+##CTh ICC
+```{r CTh Vol ICC, echo=FALSE}
+
+#Metric 'cth.avg'
+
+
+#Filter dataset for only S1 & S2. Following code needs this to be a dataframe.
+cth.12 <- fs %>% 
+  select(id,session,cth.avg,ICV) %>% 
+  filter(session!="S3") %>% 
+  as.data.frame()
+
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$cth.avg)*prior_percent,')', sep="")
+
+
+#Fit mixed effects model with brms
+cth.brm.12 <- brm(cth.avg ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=cth.12)
+summary(cth.brm.12)
+
+
+#Calculate ICC & CIs
+cth.brm.icc.12 <- sjstats::icc(cth.brm.12, prob=0.95)   
+##*******************************************  
+  
+
+#Filter dataset for only S2 & S3
+cth.23 <- fs %>% 
+  select(id,session,cth.avg,ICV) %>% 
+  filter(session!="S1") %>% 
+  as.data.frame()
+
+#Fit mixed effects model with brms
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$cth.avg)*prior_percent,')', sep="")
+
+
+cth.brm.23 <- brm(cth.avg ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=cth.23)
+summary(cth.brm.23)
+
+
+#Calculate ICC & CIs
+cth.brm.icc.23 <- sjstats::icc(cth.brm.23, prob=0.95) 
+##*******************************************
+
+
+
+##
+## wsCV
+##
+cth.s12 <- cth.12 %>% 
+  spread(session,cth.avg)
+
+
+cth.s23 <- cth.23 %>% 
+  spread(session,cth.avg)
+
+## call the wsCV function
+cth.wsCV.s12 <- wsCV.s12(cth.s12) 
+cth.wsCV.s23 <- wsCV.s23(cth.s23)
+
+
+```
+
+
+
+
+##SA ICC
+```{r SA Vol ICC, echo=FALSE}
+
+#Metric  'sa.avg'
+
+
+#Filter dataset for only S1 & S2. Following code needs this to be a dataframe.
+sa.12 <- fs %>% 
+  select(id,session,sa.avg,ICV) %>% 
+  filter(session!="S3") %>% 
+  as.data.frame()
+
+
+#Fit mixed effects model with brms
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$sa.avg)*prior_percent,')', sep="")
+
+sa.brm.12 <- brm(sa.avg ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=sa.12)
+summary(sa.brm.12)
+
+#Fit mixed effects model with brms accounting for ICV
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$sa.avg/fs$ICV)*prior_percent,')', sep="")
+
+sa.brm.12.icv <- brm(sa.avg/ICV ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=sa.12)
+summary(sa.brm.12.icv)
+
+#Calculate ICC & CIs
+sa.brm.icc.12 <- sjstats::icc(sa.brm.12, prob=0.95) 
+sa.brm.icc.12.icv <- sjstats::icc(sa.brm.12.icv, prob=0.95) 
+##*******************************************  
+  
+
+#Filter dataset for only S2 & S3
+sa.23 <- fs %>% 
+  select(id,session,sa.avg,ICV) %>% 
+  filter(session!="S1") %>% 
+  as.data.frame()
+
+#Fit mixed effects model with brms
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$sa.avg)*prior_percent,')', sep="")
+
+sa.brm.23 <- brm(sa.avg ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=sa.23)
+summary(sa.brm.23)
+
+#Fit mixed effects model with brms
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$sa.avg/fs$ICV)*prior_percent,')', sep="")
+
+sa.brm.23.icv <- brm(sa.avg/ICV ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=sa.23)
+summary(sa.brm.23.icv)
+
+#Calculate ICC & CIs
+sa.brm.icc.23 <- sjstats::icc(sa.brm.23, prob=0.95) 
+sa.brm.icc.23.icv <- sjstats::icc(sa.brm.23.icv, prob=0.95)
+##*******************************************
+
+
+
+##
+## wsCV
+##
+sa.s12 <- sa.12 %>% 
+  spread(session,sa.avg)
+
+
+sa.s23 <- sa.23 %>% 
+  spread(session,sa.avg)
+
+## call the wsCV function
+sa.wsCV.s12 <- wsCV.s12(sa.s12) 
+sa.wsCV.s23 <- wsCV.s23(sa.s23)
+
+
+```
+
+
+
+##CBF ICC
+```{r CBF Vol ICC, echo=FALSE}
+
+#Metric  'cbf.cortex'
+
+
+#Filter dataset for only S1 & S2. Following code needs this to be a dataframe.
+cbf.12 <- fs %>% 
+  select(id,session,cbf.cortex,ICV) %>% 
+  filter(session!="S3") %>% 
+  as.data.frame()
+
+
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$cbf.cortex)*prior_percent,')', sep="")
+
+
+#Fit mixed effects model with brms
+cbf.brm.12 <- brm(cbf.cortex ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=cbf.12)
+summary(cbf.brm.12)
+
+
+#Calculate ICC & CIs
+cbf.brm.icc.12 <- sjstats::icc(cbf.brm.12, prob=0.95)   
+##*******************************************  
+  
+
+#Filter dataset for only S2 & S3
+cbf.23 <- fs %>% 
+  select(id,session,cbf.cortex,ICV) %>% 
+  filter(session!="S1") %>% 
+  as.data.frame()
+
+#Fit mixed effects model with brms
+cbf.brm.23 <- brm(cbf.cortex ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=cbf.23)
+summary(cbf.brm.23)
+
+
+#Calculate ICC & CIs
+cbf.brm.icc.23 <- sjstats::icc(cbf.brm.23, prob=0.95) 
+##*******************************************
+
+
+
+##
+## wsCV
+##
+cbf.s12 <- cbf.12 %>% 
+  spread(session,cbf.cortex)
+
+
+cbf.s23 <- cbf.23 %>% 
+  spread(session,cbf.cortex)
+
+## call the wsCV function
+cbf.wsCV.s12 <- wsCV.s12(cbf.s12) 
+cbf.wsCV.s23 <- wsCV.s23(cbf.s23)
+
+
+```
+
+
+
+
+##FA ICC
+```{r FA skel ICC, echo=FALSE}
+
+#Metric 'fa.s'
+
+
+#Filter dataset for only S1 & S2. Following code needs this to be a dataframe.
+fa.12 <- fs %>% 
+  select(id,session,fa.s,ICV) %>% 
+  filter(session!="S3") %>% 
+  as.data.frame()
+
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$fa.s)*prior_percent,')', sep="")
+
+#Fit mixed effects model with brms
+fa.brm.12 <- brm(fa.s ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=fa.12)
+summary(fa.brm.12)
+
+
+#Calculate ICC & CIs
+fa.brm.icc.12 <- sjstats::icc(fa.brm.12, prob=0.95)   
+##*******************************************  
+  
+
+#Filter dataset for only S2 & S3
+fa.23 <- fs %>% 
+  select(id,session,fa.s) %>% 
+  filter(session!="S1") %>% 
+  as.data.frame()
+
+#Fit mixed effects model with brms
+fa.brm.23 <- brm(fa.s ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+        prior = set_prior(prior_name,class="b"), data=fa.23)
+summary(fa.brm.23)
+
+#Calculate ICC & CIs
+fa.brm.icc.23 <- sjstats::icc(fa.brm.23, prob=0.95) 
+##*******************************************
+
+
+
+##
+## wsCV
+##
+fa.s12 <- fa.12 %>% 
+  spread(session,fa.s)
+
+
+fa.s23 <- fa.23 %>% 
+  spread(session,fa.s)
+
+## call the wsCV function
+fa.wsCV.s12 <- wsCV.s12(fa.s12) 
+fa.wsCV.s23 <- wsCV.s23(fa.s23)
+
+
+```
+
+
+
+
+##MD ICC
+```{r MD ICC, echo=FALSE}
+
+#Metric 'md.s'
+
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$md.s)*prior_percent,')', sep="")
+
+#Filter dataset for only S1 & S2. Following code needs this to be a dataframe.
+md.12 <- fs %>% 
+  select(id,session,md.s) %>% 
+  filter(session!="S3") %>% 
+  as.data.frame()
+
+
+#Fit mixed effects model with brms
+md.brm.12 <- brm(md.s ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+        prior = set_prior(prior_name,class="b"), data=md.12)
+summary(md.brm.12)
+
+
+#Calculate ICC & CIs
+md.brm.icc.12 <- sjstats::icc(md.brm.12, prob=0.95)   
+##*******************************************  
+  
+
+#Filter dataset for only S2 & S3
+md.23 <- fs %>% 
+  select(id,session,md.s) %>% 
+  filter(session!="S1") %>% 
+  as.data.frame()
+
+#Fit mixed effects model with brms
+md.brm.23 <- brm(md.s ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=md.23)
+summary(md.brm.23)
+
+
+#Calculate ICC & CIs
+md.brm.icc.23 <- sjstats::icc(md.brm.23, prob=0.95) 
+##*******************************************
+
+
+
+##
+## wsCV
+##
+md.s12 <- md.12 %>% 
+  spread(session,md.s)
+
+
+md.s23 <- md.23 %>% 
+  spread(session,md.s)
+
+## call the wsCV function
+md.wsCV.s12 <- wsCV.s12(md.s12) 
+md.wsCV.s23 <- wsCV.s23(md.s23)
+
+
+```
+
+
+##AD ICC
+```{r AD ICC, echo=FALSE}
+
+#Metric  'ad.s'
+
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$ad.s)*prior_percent,')', sep="")
+
+#Filter dataset for only S1 & S2. Following code needs this to be a dataframe.
+ad.12 <- fs %>% 
+  select(id,session,ad.s,ICV) %>% 
+  filter(session!="S3") %>% 
+  as.data.frame()
+
+
+#Fit mixed effects model with brms
+ad.brm.12 <- brm(ad.s ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=ad.12)
+summary(ad.brm.12)
+
+
+#Calculate ICC & CIs
+ad.brm.icc.12 <- sjstats::icc(ad.brm.12, prob=0.95)   
+##*******************************************  
+  
+
+#Filter dataset for only S2 & S3
+ad.23 <- fs %>% 
+  select(id,session,ad.s,ICV) %>% 
+  filter(session!="S1") %>% 
+  as.data.frame()
+
+#Fit mixed effects model with brms
+ad.brm.23 <- brm(ad.s ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=ad.23)
+summary(ad.brm.23)
+
+#Calculate ICC & CIs
+ad.brm.icc.23 <- sjstats::icc(ad.brm.23, prob=0.95) 
+##*******************************************
+
+
+
+##
+## wsCV
+##
+ad.s12 <- ad.12 %>% 
+  spread(session,ad.s)
+
+
+ad.s23 <- ad.23 %>% 
+  spread(session,ad.s)
+
+## call the wsCV function
+ad.wsCV.s12 <- wsCV.s12(ad.s12) 
+ad.wsCV.s23 <- wsCV.s23(ad.s23)
+
+
+```
+
+
+##RD ICC
+```{r RD ICC, echo=FALSE}
+
+#Metric  'rd.s'
+
+#Set priors
+prior_name = paste0('student_t(3,0,',mean(fs$md.s)*prior_percent,')', sep="")
+
+#Filter dataset for only S1 & S2. Following code needs this to be a dataframe.
+rd.12 <- fs %>% 
+  select(id,session,rd.s,ICV) %>% 
+  filter(session!="S3") %>% 
+  as.data.frame()
+
+
+#Fit mixed effects model with brms
+rd.brm.12 <- brm(rd.s ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=rd.12)
+summary(rd.brm.12)
+
+#Calculate ICC & CIs
+rd.brm.icc.12 <- sjstats::icc(rd.brm.12, prob=0.95)   
+##*******************************************  
+  
+
+#Filter dataset for only S2 & S3
+rd.23 <- fs %>% 
+  select(id,session,rd.s,ICV) %>% 
+  filter(session!="S1") %>% 
+  as.data.frame()
+
+#Fit mixed effects model with brms
+rd.brm.23 <- brm(rd.s ~ session + (1|id),
+      control = list(adapt_delta = 0.99,max_treedepth=15),
+      iter = 10000, family=student(), algorithm=c("sampling"),
+       prior = set_prior(prior_name,class="b"), data=rd.23)
+summary(rd.brm.23)
+
+#Calculate ICC & CIs
+rd.brm.icc.23 <- sjstats::icc(rd.brm.23, prob=0.95) 
+##*******************************************
+
+
+
+##
+## wsCV
+##
+rd.s12 <- rd.12 %>% 
+  spread(session,rd.s)
+
+
+rd.s23 <- rd.23 %>% 
+  spread(session,rd.s)
+
+## call the wsCV function
+rd.wsCV.s12 <- wsCV.s12(rd.s12) 
+rd.wsCV.s23 <- wsCV.s23(rd.s23)
+
+
+```
+
+##LoadICCfromPCC
+```{r}
+#I ran sjstats on my PC as I couldn't load sjstas on eos. 
+
+tot.gm.brm.icc.12 <- readRDS("tot.gm.brm.icc.12.Rds")
+tot.gm.brm.icc.12.icv <- readRDS("tot.gm.brm.icc.12.icv.Rds")
+tot.gm.brm.icc.23 <- readRDS("tot.gm.brm.icc.23.Rds")
+tot.gm.brm.icc.23.icv <- readRDS("tot.gm.brm.icc.23.icv.Rds")
+
+
+cort.gm.brm.icc.12 <- readRDS("cort.gm.brm.icc.12.Rds")
+cort.gm.brm.icc.12.icv <- readRDS("cort.gm.brm.icc.12.icv.Rds")
+cort.gm.brm.icc.23 <- readRDS("cort.gm.brm.icc.23.Rds")
+cort.gm.brm.icc.23.icv <- readRDS("cort.gm.brm.icc.23.icv.Rds")
+
+subcort.gm.brm.icc.12 <- readRDS("subcort.gm.brm.icc.12.Rds")
+subcort.gm.brm.icc.12.icv <- readRDS("subcort.gm.brm.icc.12.icv.Rds")
+subcort.gm.brm.icc.23 <- readRDS("subcort.gm.brm.icc.23.Rds")
+subcort.gm.brm.icc.23.icv <- readRDS("subcort.gm.brm.icc.23.icv.Rds")
+
+wm.brm.icc.12 <- readRDS("wm.brm.icc.12.Rds")
+wm.brm.icc.12.icv <- readRDS("wm.brm.icc.12.icv.Rds")
+wm.brm.icc.23 <- readRDS("wm.brm.icc.23.Rds")
+wm.brm.icc.23.icv <- readRDS("wm.brm.icc.23.icv.Rds")
+
+
+vent.brm.icc.12 <- readRDS("vent.brm.icc.12.Rds")
+vent.brm.icc.12.icv <- readRDS("vent.brm.icc.12.icv.Rds")
+vent.brm.icc.23 <- readRDS("vent.brm.icc.23.Rds")
+vent.brm.icc.23.icv <- readRDS("vent.brm.icc.23.icv.Rds")
+
+cth.brm.icc.12 <- readRDS("cth.brm.icc.12.Rds")
+cth.brm.icc.23 <- readRDS("cth.brm.icc.23.Rds")
+
+sa.brm.icc.12 <- readRDS("sa.brm.icc.12.Rds")
+sa.brm.icc.12.icv <- readRDS("sa.brm.icc.12.icv.Rds")
+sa.brm.icc.23 <- readRDS("sa.brm.icc.23.Rds")
+sa.brm.icc.23.icv <- readRDS("sa.brm.icc.23.icv.Rds")
+
+cbf.brm.icc.12 <- readRDS("cbf.brm.icc.12.Rds")
+cbf.brm.icc.23 <- readRDS("cbf.brm.icc.23.Rds")
+
+fa.brm.icc.12 <- readRDS("fa.brm.icc.12.Rds")
+fa.brm.icc.23 <- readRDS("fa.brm.icc.23.Rds")
+
+md.brm.icc.12 <- readRDS("md.brm.icc.12.Rds")
+md.brm.icc.23 <- readRDS("md.brm.icc.23.Rds")
+
+ad.brm.icc.12 <- readRDS("ad.brm.icc.12.Rds")
+ad.brm.icc.23 <- readRDS("ad.brm.icc.23.Rds")
+
+rd.brm.icc.12 <- readRDS("rd.brm.icc.12.Rds")
+rd.brm.icc.23 <- readRDS("rd.brm.icc.23.Rds")
+
+```
+
+
+
+#KFOLD
+```{r}
+#Put all KFOLD together so I can run overnight.
+
+
+totgm.bias.common <- add_criterion(totgm.bias.common,"kfold")
+totgm.bias.session <- add_criterion(totgm.bias.session,"kfold")
+
+totgm.bias.common$kfold
+totgm.kfold <- loo_compare(totgm.bias.common, totgm.bias.session, criterion="kfold")
+
+
+cortgm.bias.common <- add_criterion(cortgm.bias.common,"kfold")
+cortgm.bias.session <- add_criterion(cortgm.bias.session,"kfold")
+
+cortgm.bias.common$kfold
+cortgm.kfold <- loo_compare(cortgm.bias.common, cortgm.bias.session, criterion="kfold")
+
+
+
+subcortgm.bias.common <- add_criterion(subcortgm.bias.common,"kfold")
+subcortgm.bias.session <- add_criterion(subcortgm.bias.session,"kfold")
+
+subcortgm.bias.common$kfold
+subcortgm.kfold <- loo_compare(subcortgm.bias.common, subcortgm.bias.session, criterion="kfold")
+
+wm.bias.common <- add_criterion(wm.bias.common,"kfold")
+wm.bias.session <- add_criterion(wm.bias.session,"kfold")
+
+wm.bias.common$kfold
+wm.kfold <- loo_compare(wm.bias.common, wm.bias.session, criterion="kfold")
+
+
+vent.bias.common <- add_criterion(vent.bias.common,"kfold")
+vent.bias.session <- add_criterion(vent.bias.session,"kfold")
+
+vent.bias.common$kfold
+vent.kfold <- loo_compare(vent.bias.common, vent.bias.session, criterion="kfold")
+
+cth.bias.common <- add_criterion(cth.bias.common,"kfold")
+cth.bias.session <- add_criterion(cth.bias.session,"kfold")
+
+cth.bias.common$kfold
+cth.kfold <- loo_compare(cth.bias.common, cth.bias.session, criterion="kfold")
+
+
+sa.bias.common <- add_criterion(sa.bias.common,"kfold")
+sa.bias.session <- add_criterion(sa.bias.session,"kfold")
+
+sa.bias.common$kfold
+sa.kfold <- loo_compare(sa.bias.common, sa.bias.session, criterion="kfold")
+
+
+cbf.bias.common <- add_criterion(cbf.bias.common,"kfold")
+cbf.bias.session <- add_criterion(cbf.bias.session,"kfold")
+
+cbf.bias.common$kfold
+cbf.kfold <- loo_compare(cbf.bias.common, cbf.bias.session, criterion="kfold")
+
+
+
+fa.bias.common <- add_criterion(fa.bias.common,"kfold")
+fa.bias.session <- add_criterion(fa.bias.session,"kfold")
+
+fa.bias.common$kfold
+fa.kfold <- loo_compare(fa.bias.common, fa.bias.session, criterion="kfold")
+
+
+
+md.bias.common <- add_criterion(md.bias.common,"kfold")
+md.bias.session <- add_criterion(md.bias.session,"kfold")
+
+md.bias.common$kfold
+md.kfold <- loo_compare(md.bias.common, md.bias.session, criterion="kfold")
+
+
+ad.bias.common <- add_criterion(ad.bias.common,"kfold")
+ad.bias.session <- add_criterion(ad.bias.session,"kfold")
+
+ad.bias.common$kfold
+ad.kfold <- loo_compare(ad.bias.common, ad.bias.session, criterion="kfold")
+
+
+rd.bias.common <- add_criterion(rd.bias.common,"kfold")
+rd.bias.session <- add_criterion(rd.bias.session,"kfold")
+
+rd.bias.common$kfold
+rd.kfold <- loo_compare(rd.bias.common, rd.bias.session, criterion="kfold")
+
+
+
+
+
+
+
+
+
+
+# 
+# cth.bias.common <- add_criterion(cth.bias.common,"kfold")
+# cth.bias.session <- add_criterion(cth.bias.session,"kfold")
+# 
+# cth.bias.common$kfold
+# cth.kfold <- loo_compare(cth.bias.common, cth.bias.session, criterion="kfold")
+# 
+# 
+# 
+# sa.bias.common <- add_criterion(sa.bias.common,"kfold")
+# sa.bias.session <- add_criterion(sa.bias.session,"kfold")
+# 
+# sa.bias.common$kfold
+# sa.kfold <- loo_compare(sa.bias.common, sa.bias.session, criterion="kfold")
+# 
+# 
+# 
+# cbf.bias.common <- add_criterion(cbf.bias.common,"kfold")
+# cbf.bias.session <- add_criterion(cbf.bias.session,"kfold")
+# 
+# cbf.bias.common$kfold
+# cbf.kfold <- loo_compare(cbf.bias.common, cbf.bias.session, criterion="kfold")
+# 
+# 
+# 
+# fa.bias.common <- add_criterion(fa.bias.common,"kfold")
+# fa.bias.session <- add_criterion(fa.bias.session,"kfold")
+# 
+# fa.bias.common$kfold
+# fa.kfold <- loo_compare(fa.bias.common, fa.bias.session, criterion="kfold")
+# 
+# 
+# 
+# md.bias.common <- add_criterion(md.bias.common,"kfold")
+# md.bias.session <- add_criterion(md.bias.session,"kfold")
+# 
+# md.bias.common$kfold
+# md.kfold <- loo_compare(md.bias.common, md.bias.session, criterion="kfold")
+# 
+# 
+# 
+# ad.bias.common <- add_criterion(ad.bias.common,"kfold")
+# ad.bias.session <- add_criterion(ad.bias.session,"kfold")
+# 
+# ad.bias.common$kfold
+# ad.kfold <- loo_compare(ad.bias.common, ad.bias.session, criterion="kfold")
+# 
+# 
+# rd.bias.common <- add_criterion(rd.bias.common,"kfold")
+# rd.bias.session <- add_criterion(rd.bias.session,"kfold")
+# 
+# rd.bias.common$kfold
+# rd.kfold <- loo_compare(rd.bias.common, rd.bias.session, criterion="kfold")
+# 
+# 
+
+
+```
+
+
+
+#DICE SI
+```{r}
+
+#Load data
+dice <- read.csv("analysis_spreadsheets/dice_cortex.csv")
+
+dice$timepoint <- relevel(dice$timepoint,ref="within")
+
+#Calculate average dice 
+##
+## Is dice similarity index different between/within
+## 
+
+dice.lh <- brm(100*lh.SI ~  timepoint + (1|id),
+           control = list(adapt_delta = 0.99,max_treedepth=15),
+           iter = 10000, family=student(), data=dice,
+           algorithm = c("sampling"))
+summary(dice.lh)
+
+
+#for rh
+dice.rh <- brm(100*rh.SI ~  timepoint + (1|id),
+           control = list(adapt_delta = 0.99,max_treedepth=15),
+           iter = 10000, family=student(), data=dice,
+           algorithm = c("sampling"))
+summary(dice.rh)
+
+
+#Summary of dice similarity index
+dice.summary <- dice %>% 
+  group_by(timepoint) %>% 
+  dplyr::summarise(lh.m=mean(lh.SI), lh.st = sd(lh.SI), rh.m=mean(rh.SI), rh.st = sd(rh.SI))
+
+
+##
+## percent diff
+##
+
+  sum.brm.fit <- summary(dice.lh)
+  
+  #Intercep and CI
+  int <- sum.brm.fit$fixed[1]
+  int.ci.l <- sum.brm.fit$fixed[1,3]
+  int.ci.u <- sum.brm.fit$fixed[1,4]
+  
+  #S1 mean and CI
+  s1m <- sum.brm.fit$fixed[2]/sum.brm.fit$fixed[1] * 100
+  s1m.ci.l <- sum.brm.fit$fixed[2,3]/sum.brm.fit$fixed[1] * 100
+  s1m.ci.u <-sum.brm.fit$fixed[2,4]/sum.brm.fit$fixed[1] * 100
+  
+ 
+    sum.brm.fit <- summary(dice.rh)
+  
+  #Intercep and CI
+  int <- sum.brm.fit$fixed[1]
+  int.ci.l <- sum.brm.fit$fixed[1,3]
+  int.ci.u <- sum.brm.fit$fixed[1,4]
+  
+  #S1 mean and CI
+  s1m <- sum.brm.fit$fixed[2]/sum.brm.fit$fixed[1] * 100
+  s1m.ci.l <- sum.brm.fit$fixed[2,3]/sum.brm.fit$fixed[1] * 100
+  s1m.ci.u <-sum.brm.fit$fixed[2,4]/sum.brm.fit$fixed[1] * 100
+
+
+```
+
+
+
+#POWER
+##Sample size
+```{r}
+#Power calcs
+#http://sphweb.bumc.bu.edu/otlt/MPH-Modules/BS/BS704_Power/BS704_Power_print.html
+#https://select-statistics.co.uk/calculators/sample-size-calculator-two-means/
+
+#Calculate sample size (assume equal group sizes), alpha=0.5, power=0.8, difference in
+#two independent group means of 10%. Mean1 = intercept of each metric at F1 from the full model (including session + (session|subject)). Standard deviation = taken the estimate of standard deviation for at F1 (again, from the full model). Group sizes were compared across the MRI metrics.
+#n = (Zα/2+Zβ)2 *2*σ2 / diff2,
+# 
+# where Zα/2 is the critical value of the Normal distribution at α/2 (e.g. for a confidence level of 95%, α is 0.05 and the critical value is 1.96), Zβ is the critical value of the Normal distribution at β (e.g. for a power of 80%, β is 0.2 and the critical value is 0.84), σ2 is the population variance, and diff is the difference you would like to detect.
+
+
+#Magnitude of the difference between the two groups (0.05 = 5% difference)
+# mag_diff <- 0.05
+ mag_diff <- 0.04
+# mag_diff <- 0.03
+# mag_diff <- 0.01
+# mag_diff <- 0.005
+alpha <- 0.05
+power <- 0.8
+
+
+
+#Calculate sample sizes needed, given the observed variance.
+n.totgm <- sample_size(totgm.bias.session, mag_diff, alpha, power)
+n.totgm.icv <- sample_size(totgm.icv.bias.session, mag_diff, alpha, power)
+
+n.cortgm <- sample_size(cortgm.bias.session, mag_diff, alpha, power)
+n.cortgm.icv <- sample_size(cortgm.icv.bias.session, mag_diff, alpha, power)
+
+n.subcortgm <- sample_size(subcortgm.bias.session, mag_diff, alpha, power)
+n.subcortgm.icv <- sample_size(subcortgm.icv.bias.session, mag_diff, alpha, power)
+
+n.wm <- sample_size(wm.bias.session, mag_diff, alpha, power)
+n.wm.icv <- sample_size(wm.icv.bias.session, mag_diff, alpha, power)
+
+n.vent <- sample_size(vent.bias.session, mag_diff, alpha, power)
+n.vent.icv <- sample_size(vent.icv.bias.session, mag_diff, alpha, power)
+
+n.cth <- sample_size(cth.bias.session, mag_diff, alpha, power)
+n.sa <- sample_size(sa.bias.session, mag_diff, alpha, power)
+n.sa.icv <- sample_size(sa.icv.bias.session, mag_diff, alpha, power)
+n.cbf <- sample_size(cbf.bias.session, mag_diff, alpha, power)
+
+n.fa <- sample_size(fa.bias.session, mag_diff, alpha, power)
+n.md <- sample_size(md.bias.session, mag_diff, alpha, power)
+n.ad <- sample_size(ad.bias.session, mag_diff, alpha, power)
+n.rd <- sample_size(md.bias.session, mag_diff, alpha, power)
+
+
+
+```
+
+
+##Figure: Sample size
+```{r}
+
+
+ss <- read.csv("analysis_spreadsheets/sample_size_table_R1.csv")
+
+
+#Exclude Vent.Vol=1594 and Vent.Vol.ICV=1446 as they destroy the effect of the plot. They are too large.
+
+ss.g<- ss %>% 
+  gather(metric,size,c(`TotGM.Vol` , `TotGM.Vol.ICV` , `Cortical.Vol` , `Cortical.Vol.ICV` ,
+                       `Subcort.Vol` , `Subcort.Vol.ICV` ,`WM.Vol` , `WM.Vol.ICV` ,
+                        `CTh`, `SA`, `SA.ICV`, `CBF`,`FA`,`MD`,
+                       `AD`, `RD`)) %>% 
+  mutate(Mean.difference = factor(Mean.difference)) %>% 
+  filter(Mean.difference=="4") 
+
+ss.g$metric <- reorder(ss.g$metric,-ss.g$size)
+
+
+# ss.plot <- ggplot(ss.g,aes(x=Mean.difference, y=size, fill=Mean.difference)) +
+#   geom_bar(stat = "identity") + 
+#   facet_wrap(metric~.) +
+#   scale_fill_brewer(palette="Dark2")
+
+colorCount = length(unique(ss.g$metric))
+getPalette = colorRampPalette(brewer.pal(8,"Dark2"))
+
+
+ss.plot <- ggplot(ss.g,aes(x=metric, y=size, fill=metric)) +
+  geom_bar(stat = "identity", fill= getPalette(colorCount)) + 
+  #scale_fill_brewer(getPalette(colorCount)) +
+  ylab("Sample size per group") +
+  scale_x_discrete()+
+  scale_y_continuous(limits=c(0, 400)) +
+  geom_text(aes(label=size),fontface = "bold",hjust=-0.3,color='black',
+            position=position_dodge(0.9),size=5) +
+  xlab("")+
+  theme(axis.text.x = element_text(size=13,  color='black')) +
+  theme(axis.text.y = element_text(size=13,   color='black')) +
+  theme(axis.title.y = element_text(size=15,  face="bold", color='black')) +
+  theme(legend.position = "none") + 
+  coord_flip()
+  
+ss.plot
+ggsave("Sample_size_4per.pdf",width=8,height=5)
+
+
+```
+
+
+
