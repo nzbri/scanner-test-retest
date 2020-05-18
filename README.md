@@ -7,7 +7,7 @@ This is the analysis script to accompany the manuscript: "Test-retest reliabilit
 scanner_move_R.csv: average DTI metrics along the white matter skeleton (FA=fractional anisotropy, MD=mean diffusivity, AD=axial diffusivity,
 RD=radial diffusivity). 
 
-CorticalMeasuresENIGMA_SurfAvg.csv & *_ThicknAvg.csf: average thickness and surface area from the Desikan-Killiany Freesurfer regions.
+CorticalMeasuresENIGMA_SurfAvg.csv & *_ThicknAvg.csv: average thickness and surface area from the Desikan-Killiany Freesurfer regions.
 Subcort_vol.csv: Freesurfer-derived subcortical volumes + global GM/cortical/subcortical/WM/ventricle volumes.
 scbf_cortex.csv & scbf_sub_cort: Perfusion values from the Desikan-Killiany parcellations.
 sample_size_table_R1.csv: Sample size estimates for plotting.
